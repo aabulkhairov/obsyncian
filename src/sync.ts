@@ -44,6 +44,8 @@ export function isExcluded(path: string, excludes: string[]): boolean {
 }
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
+const DOWNLOAD_BATCH = 100; // matches server MAX_BATCH in downloads_controller.rb
+const DOWNLOAD_CONCURRENCY = 8;
 
 // One pull+push cycle over the whole vault. Deliberately boring: no partial
 // merges, no CRDTs. Conflicts produce a "(conflict …)" copy and both versions
@@ -96,9 +98,10 @@ export class SyncEngine {
   private async pull(report: SyncReport): Promise<void> {
     for (;;) {
       const page = await this.api.changes(this.vaultId(), this.state.cursor);
+      const blobs = await this.prefetchBlobs(page.changes, report);
       for (const change of page.changes) {
         try {
-          await this.applyRemoteChange(change, report);
+          await this.applyRemoteChange(change, report, blobs);
         } catch (e) {
           report.errors.push(`pull ${change.file_id}: ${e}`);
         }
@@ -112,7 +115,50 @@ export class SyncEngine {
     }
   }
 
-  private async applyRemoteChange(change: ChangeRecord, report: SyncReport): Promise<void> {
+  // Presigns and downloads every blob a page's changes will actually need,
+  // in batches of DOWNLOAD_BATCH with DOWNLOAD_CONCURRENCY parallel fetches —
+  // instead of one presign+GET round trip per file (the old behavior), which
+  // serializes the whole pull behind per-request latency. Skips anything
+  // applyRemoteChange would skip anyway (self-echo, pure renames).
+  private async prefetchBlobs(changes: ChangeRecord[], report: SyncReport): Promise<Map<string, ArrayBuffer>> {
+    const blobs = new Map<string, ArrayBuffer>();
+    const need = changes.filter((c) => {
+      if (c.deleted) return false;
+      const entry = this.state.files[c.file_id];
+      if (entry && entry.version >= c.version) return false;
+      if (entry && entry.remoteHash === c.ciphertext_hash) return false;
+      return true;
+    });
+    if (!need.length) return blobs;
+
+    const urls = new Map<string, string>();
+    for (let i = 0; i < need.length; i += DOWNLOAD_BATCH) {
+      const batch = need.slice(i, i + DOWNLOAD_BATCH);
+      const { downloads } = await this.api.presignDownloads(this.vaultId(), batch.map((c) => c.file_id));
+      for (const d of downloads) urls.set(d.file_id, d.get_url);
+    }
+
+    const queue = [...urls.entries()];
+    const worker = async () => {
+      let item: [string, string] | undefined;
+      while ((item = queue.pop())) {
+        const [fileId, url] = item;
+        try {
+          blobs.set(fileId, await this.api.getBlob(url));
+        } catch (e) {
+          report.errors.push(`download ${fileId}: ${e}`);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, queue.length) }, worker));
+    return blobs;
+  }
+
+  private async applyRemoteChange(
+    change: ChangeRecord,
+    report: SyncReport,
+    blobs: Map<string, ArrayBuffer>
+  ): Promise<void> {
     const entry = this.state.files[change.file_id];
     // Self-echo: our own committed version coming back on the next pull.
     if (entry && entry.version >= change.version) return;
@@ -137,7 +183,8 @@ export class SyncEngine {
       return;
     }
 
-    const remoteBytes = await this.download(change);
+    const remoteBytes = blobs.get(change.file_id);
+    if (!remoteBytes) return; // presign/fetch failed — already recorded in report.errors
     const plaintext = await this.codec.decodeContent(remoteBytes);
     const localFile = this.app.vault.getAbstractFileByPath(path);
 
@@ -198,12 +245,6 @@ export class SyncEngine {
       // entry makes the push scan treat it as brand new (delete loses to edit).
     }
     delete this.state.files[change.file_id];
-  }
-
-  private async download(change: ChangeRecord): Promise<ArrayBuffer> {
-    const { downloads } = await this.api.presignDownloads(this.vaultId(), [change.file_id]);
-    if (!downloads.length) throw new Error("no download URL returned");
-    return this.api.getBlob(downloads[0].get_url);
   }
 
   // ---- push ----------------------------------------------------------------
