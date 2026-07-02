@@ -76,7 +76,7 @@ export default class ObsyncPlugin extends Plugin {
       this.codecCache = new PlainCodec();
     } else {
       if (!this.settings.passphrase) {
-        throw new Error("This vault is encrypted — enter its passphrase in Settings → Obsync.");
+        throw new Error("This vault is encrypted — enter its passphrase in Settings → Obsyncian.");
       }
       const key = await unlock(this.settings.passphrase, this.settings.vaultKeyCheck);
       this.codecCache = new CryptoCodec(key);
@@ -86,26 +86,26 @@ export default class ObsyncPlugin extends Plugin {
 
   async syncNow(quiet = false) {
     if (!this.connected) {
-      if (!quiet) new Notice("Obsync: connect your account first (Settings → Obsync).");
+      if (!quiet) new Notice("Obsyncian: connect your account first (Settings → Obsyncian).");
       return;
     }
     if (this.engine.busy) return;
     try {
       const report = await this.engine.sync();
       if (!quiet && report) {
-        new Notice(`Obsync: ↓${report.pulled} ↑${report.pushed}` +
+        new Notice(`Obsyncian: ↓${report.pulled} ↑${report.pushed}` +
           (report.conflicts ? `, ${report.conflicts} conflict(s)` : "") +
           (report.errors.length ? `, ${report.errors.length} error(s) — see console` : ""));
       }
       if (report?.errors.length) console.warn("[obsync] sync errors:", report.errors);
     } catch (e) {
       console.error("[obsync] sync failed:", e);
-      if (!quiet) new Notice(`Obsync: sync failed — ${e}`);
+      if (!quiet) new Notice(`Obsyncian: sync failed — ${e}`);
     }
   }
 
   setStatus(text: string) {
-    this.statusBarEl.setText(`Obsync: ${text}`);
+    this.statusBarEl.setText(`Obsyncian: ${text}`);
   }
 
   async loadPersisted() {

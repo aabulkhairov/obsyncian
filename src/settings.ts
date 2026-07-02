@@ -17,7 +17,7 @@ export interface ObsyncSettings {
 }
 
 export const DEFAULT_SETTINGS: ObsyncSettings = {
-  serverUrl: "https://obsync.nocodo.tech",
+  serverUrl: "https://obsyncian.com",
   email: "",
   identity: "",
   apiToken: "",
@@ -59,7 +59,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Server URL")
-      .setDesc("Obsync API endpoint. Leave default unless self-hosting.")
+      .setDesc("Obsyncian API endpoint. Leave default unless self-hosting.")
       .addText((text) =>
         text.setValue(s.serverUrl).onChange(async (value) => {
           s.serverUrl = value.trim();
@@ -173,9 +173,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
         btn.setButtonText("Send code").setCta().onClick(async () => {
           try {
             await this.plugin.api.requestCode(s.email);
-            new Notice("Obsync: code sent — check your inbox.");
+            new Notice("Obsyncian: code sent — check your inbox.");
           } catch (e) {
-            new Notice(`Obsync: ${e}`);
+            new Notice(`Obsyncian: ${e}`);
           }
         })
       );
@@ -189,7 +189,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
             const res = await this.plugin.api.verify(s.email, this.pendingCode, this.deviceName());
             await this.completeLogin(res.token, res.identity ?? res.email, res.email);
           } catch (e) {
-            new Notice(`Obsync: ${e}`);
+            new Notice(`Obsyncian: ${e}`);
           }
         })
       );
@@ -218,7 +218,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
               const res = await this.plugin.api.verifyTelegram(tgCode, this.deviceName());
               await this.completeLogin(res.token, res.identity, res.email ?? "");
             } catch (e) {
-              new Notice(`Obsync: ${e}`);
+              new Notice(`Obsyncian: ${e}`);
             }
           })
         );
@@ -258,7 +258,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     s.identity = identity;
     if (email) s.email = email;
     await this.plugin.saveSettings();
-    new Notice("Obsync: logged in.");
+    new Notice("Obsyncian: logged in.");
     this.display();
   }
 
@@ -297,10 +297,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
             s.vaultKeyCheck = keyCheck ?? "";
             this.plugin.invalidateCodec();
             await this.plugin.saveSettings();
-            new Notice(`Obsync: vault created and linked${keyCheck ? " (end-to-end encrypted)" : ""}.`);
+            new Notice(`Obsyncian: vault created and linked${keyCheck ? " (end-to-end encrypted)" : ""}.`);
             this.display();
           } catch (e) {
-            new Notice(`Obsync: ${e}`);
+            new Notice(`Obsyncian: ${e}`);
           }
         })
       );
@@ -325,13 +325,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
           if (!vault) return;
           if (vault.key_check) {
             if (!s.passphrase) {
-              new Notice("Obsync: this vault is encrypted — enter its passphrase above first.");
+              new Notice("Obsyncian: this vault is encrypted — enter its passphrase above first.");
               return;
             }
             try {
               await unlock(s.passphrase, vault.key_check);
             } catch (e) {
-              new Notice(`Obsync: ${e instanceof Error ? e.message : e}`);
+              new Notice(`Obsyncian: ${e instanceof Error ? e.message : e}`);
               return;
             }
           }
@@ -341,7 +341,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           Object.assign(this.plugin.syncState, emptySyncState());
           this.plugin.invalidateCodec();
           await this.plugin.saveSettings();
-          new Notice(`Obsync: linked "${s.vaultName}" — next sync will merge its contents into this vault.`);
+          new Notice(`Obsyncian: linked "${s.vaultName}" — next sync will merge its contents into this vault.`);
           this.display();
         });
         dd.setValue("");

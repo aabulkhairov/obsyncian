@@ -1,10 +1,10 @@
 {
   "id": "obsync",
-  "name": "Obsync",
+  "name": "Obsyncian",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Affordable end-to-end encrypted vault sync. Requires an Obsync account (free tier available).",
+  "description": "Affordable end-to-end encrypted vault sync. Requires an Obsyncian account (free tier available).",
   "author": "Almas Abulkhairov",
-  "authorUrl": "https://obsync.app",
+  "authorUrl": "https://obsyncian.com",
   "isDesktopOnly": false
 }

@@ -84,7 +84,7 @@ export class CryptoCodec implements Codec {
   async decodeContent(data: ArrayBuffer): Promise<ArrayBuffer> {
     const bytes = new Uint8Array(data);
     if (bytes.byteLength < MAGIC.byteLength || !bytesEqual(bytes.subarray(0, MAGIC.byteLength), MAGIC)) {
-      throw new Error("Not an Obsync-encrypted blob (bad magic).");
+      throw new Error("Not an Obsyncian-encrypted blob (bad magic).");
     }
     return decryptBytes(this.key, data, MAGIC.byteLength);
   }

@@ -169,7 +169,7 @@ export class SyncEngine {
           mtime: 0, size: -1, // …but force the push scan to re-hash and upload local
         });
         report.conflicts++;
-        new Notice(`Obsync: conflict on ${path} — saved a conflict copy.`);
+        new Notice(`Obsyncian: conflict on ${path} — saved a conflict copy.`);
         return;
       }
     }
