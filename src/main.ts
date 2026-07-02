@@ -4,6 +4,7 @@ import { Codec, PlainCodec } from "./codec";
 import { CryptoCodec, unlock } from "./crypto";
 import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, parseExcludes } from "./settings";
 import { SyncEngine, SyncState, emptySyncState } from "./sync";
+import { checkForUpdate } from "./updater";
 
 interface PersistedData {
   settings: ObsyncSettings;
@@ -43,9 +44,11 @@ export default class ObsyncPlugin extends Plugin {
     this.addSettingTab(new ObsyncSettingTab(this.app, this));
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
+    this.addCommand({ id: "check-for-update", name: "Check for updates", callback: () => this.checkForPluginUpdate(true) });
 
     const scheduleSync = debounce(() => this.syncNow(true), 5_000, true);
     this.app.workspace.onLayoutReady(() => {
+      this.checkForPluginUpdate();
       if (!this.connected) return;
       this.syncNow(true);
       this.registerEvent(this.app.vault.on("create", scheduleSync));
@@ -106,6 +109,45 @@ export default class ObsyncPlugin extends Plugin {
 
   setStatus(text: string) {
     this.statusBarEl.setText(`Obsyncian: ${text}`);
+  }
+
+  // Beta/manual-install update path: pulls the latest build from the same
+  // server the plugin already talks to and overwrites its own files on
+  // disk if it's newer, then reloads itself. Irrelevant once the plugin is
+  // in the official community directory — Obsidian's own updater takes
+  // over at that point.
+  async checkForPluginUpdate(manual = false) {
+    try {
+      const dir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+      const result = await checkForUpdate(
+        this.settings.serverUrl,
+        this.manifest.version,
+        (path, data) => this.app.vault.adapter.write(path, data),
+        dir
+      );
+      if (result.updated) {
+        new Notice(`Obsyncian: updated to v${result.version} — reloading…`);
+        await this.reloadSelf();
+      } else if (manual) {
+        new Notice("Obsyncian: already up to date.");
+      }
+    } catch (e) {
+      console.warn("[obsync] update check failed:", e);
+      if (manual) new Notice(`Obsyncian: update check failed — ${e}`);
+    }
+  }
+
+  private async reloadSelf() {
+    // Undocumented but stable API (same one BRAT/Hot Reload rely on) — a
+    // disable+enable cycle re-reads main.js from disk. Falls back to asking
+    // for a manual reload if a future Obsidian version removes it.
+    const plugins = (this.app as unknown as { plugins?: { disablePlugin?: Function; enablePlugin?: Function } }).plugins;
+    if (typeof plugins?.disablePlugin === "function" && typeof plugins?.enablePlugin === "function") {
+      await plugins.disablePlugin(this.manifest.id);
+      await plugins.enablePlugin(this.manifest.id);
+    } else {
+      new Notice("Obsyncian: please reload Obsidian to apply the update.");
+    }
   }
 
   async loadPersisted() {

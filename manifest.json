@@ -1,7 +1,7 @@
 {
   "id": "obsync",
   "name": "Obsyncian",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.5.0",
   "description": "Affordable end-to-end encrypted vault sync. Requires an Obsyncian account (free tier available).",
   "author": "Almas Abulkhairov",
