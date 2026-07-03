@@ -1,4 +1,5 @@
 import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
+import { vaultLabel } from "./api";
 import { makeKeyCheck, unlock } from "./crypto";
 import type ObsyncPlugin from "./main";
 import { emptySyncState } from "./sync";
@@ -14,6 +15,7 @@ export interface ObsyncSettings {
   passphrase: string;
   syncIntervalMinutes: number;
   excludedFolders: string;
+  paused: boolean;
 }
 
 export const DEFAULT_SETTINGS: ObsyncSettings = {
@@ -27,6 +29,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   passphrase: "",
   syncIntervalMinutes: 5,
   excludedFolders: "",
+  paused: false,
 };
 
 export function parseExcludes(excludedFolders: string): string[] {
@@ -319,7 +322,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         return;
       }
       existing.addDropdown((dd) => {
-        for (const v of state.vaults) dd.addOption(String(v.id), v.name);
+        for (const v of state.vaults) dd.addOption(String(v.id), vaultLabel(v));
         dd.onChange(async (id) => {
           const vault = state.vaults.find((v) => String(v.id) === id);
           if (!vault) return;
@@ -336,7 +339,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
             }
           }
           s.vaultId = id;
-          s.vaultName = vault.name;
+          s.vaultName = vaultLabel(vault); // shared vaults show as "@owner — Name" everywhere
           s.vaultKeyCheck = vault.key_check ?? "";
           Object.assign(this.plugin.syncState, emptySyncState());
           this.plugin.invalidateCodec();

@@ -1,0 +1,118 @@
+.obsync-status-view {
+  padding: var(--size-4-3);
+}
+
+.obsync-status-view h4 {
+  margin: 0 0 var(--size-4-2) 0;
+}
+
+.obsync-muted {
+  color: var(--text-muted);
+}
+
+.obsync-status-line {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  padding: var(--size-4-2);
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  margin-bottom: var(--size-4-3);
+  word-break: break-word;
+}
+
+.obsync-stats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-2);
+  margin-bottom: var(--size-4-3);
+}
+
+.obsync-stat-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--font-ui-small);
+}
+
+.obsync-stat-label {
+  color: var(--text-muted);
+}
+
+.obsync-stat-value {
+  font-weight: var(--font-medium);
+}
+
+.obsync-buttons {
+  display: flex;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-3);
+}
+
+.obsync-sync-btn,
+.obsync-pause-btn {
+  flex: 1;
+}
+
+.obsync-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: var(--size-4-2);
+  flex-shrink: 0;
+}
+
+.obsync-status-line {
+  display: flex;
+  align-items: center;
+}
+
+.obsync-status-dot.is-idle {
+  background: var(--color-green);
+}
+
+.obsync-status-dot.is-busy {
+  background: var(--color-blue);
+  animation: obsync-pulse 1.2s ease-in-out infinite;
+}
+
+.obsync-status-dot.is-paused {
+  background: var(--color-yellow);
+}
+
+@keyframes obsync-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.obsync-report {
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: var(--size-4-2);
+  font-size: var(--font-ui-small);
+}
+
+.obsync-report-title {
+  color: var(--text-muted);
+  margin-bottom: var(--size-2-2);
+}
+
+.obsync-report-line {
+  padding: var(--size-2-1) 0;
+}
+
+.obsync-errors {
+  margin-top: var(--size-4-2);
+}
+
+.obsync-errors-title {
+  color: var(--color-red);
+  margin-bottom: var(--size-2-2);
+}
+
+.obsync-error-line {
+  font-family: var(--font-monospace);
+  font-size: var(--font-smallest);
+  color: var(--text-muted);
+  word-break: break-all;
+  padding: var(--size-2-1) 0;
+}

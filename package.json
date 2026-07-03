@@ -1,13 +1,13 @@
 {
   "name": "obsync",
-  "version": "0.1.1",
+  "version": "0.1.6",
   "description": "Affordable end-to-end encrypted vault sync for Obsidian",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
     "test": "vitest run",
-    "publish:dev": "node version-bump.mjs && npm run build && mkdir -p ../server/public/dev-plugin && cp main.js manifest.json ../server/public/dev-plugin/",
+    "publish:dev": "node version-bump.mjs && npm run build && mkdir -p ../server/public/dev-plugin && cp main.js manifest.json styles.css ../server/public/dev-plugin/",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },
   "keywords": [

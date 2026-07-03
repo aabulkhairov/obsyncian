@@ -5,6 +5,14 @@ export interface VaultInfo {
   name: string;
   latest_revision: number;
   key_check: string | null;
+  role?: "owner" | "shared";
+  owner_identity?: string | null;
+}
+
+// Shared vaults are labeled with their owner so two people's "Notes"
+// vaults stay distinguishable: `@alice — Notes`.
+export function vaultLabel(v: VaultInfo): string {
+  return v.role === "shared" && v.owner_identity ? `${v.owner_identity} — ${v.name}` : v.name;
 }
 
 export interface ChangeRecord {

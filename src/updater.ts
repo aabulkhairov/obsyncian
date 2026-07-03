@@ -48,7 +48,20 @@ export async function checkForUpdate(
   const mainRes = await requestUrl({ url: `${base}/dev-plugin/main.js`, throw: false });
   if (mainRes.status !== 200) return { updated: false };
 
+  // styles.css is best-effort: an update must not fail over cosmetics, but
+  // skipping it entirely leaves the plugin unstyled (raw text dump).
+  const stylesRes = await requestUrl({ url: `${base}/dev-plugin/styles.css`, throw: false });
+
   await write(`${pluginDir}/manifest.json`, manifestRes.text);
   await write(`${pluginDir}/main.js`, mainRes.text);
+  if (stylesRes.status === 200) await write(`${pluginDir}/styles.css`, stylesRes.text);
   return { updated: true, version: remoteManifest.version };
+}
+
+// Repair path for installs whose styles.css never arrived (older updater
+// versions only shipped manifest.json + main.js).
+export async function fetchStyles(serverUrl: string): Promise<string | null> {
+  const base = serverUrl.replace(/\/+$/, "");
+  const res = await requestUrl({ url: `${base}/dev-plugin/styles.css`, throw: false });
+  return res.status === 200 ? res.text : null;
 }

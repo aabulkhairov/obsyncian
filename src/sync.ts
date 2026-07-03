@@ -15,6 +15,7 @@ export interface IndexEntry {
 export interface SyncState {
   cursor: number;
   files: Record<string, IndexEntry>; // keyed by file_id
+  lastSyncAt?: number; // epoch ms of the last successful sync
 }
 
 export function emptySyncState(): SyncState {
@@ -46,6 +47,16 @@ export function isExcluded(path: string, excludes: string[]): boolean {
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
 const DOWNLOAD_BATCH = 100; // matches server MAX_BATCH in downloads_controller.rb
 const DOWNLOAD_CONCURRENCY = 8;
+const PUSH_CONCURRENCY = 6;
+const PROGRESS_BAR_WIDTH = 10;
+
+function progressText(prefix: string, current: number, total: number): string {
+  if (total <= 0) return prefix;
+  const pct = Math.min(100, Math.round((current / total) * 100));
+  const filled = Math.round((PROGRESS_BAR_WIDTH * pct) / 100);
+  const bar = "▰".repeat(filled) + "▱".repeat(PROGRESS_BAR_WIDTH - filled);
+  return `${prefix} ${bar} ${current}/${total}`;
+}
 
 // One pull+push cycle over the whole vault. Deliberately boring: no partial
 // merges, no CRDTs. Conflicts produce a "(conflict …)" copy and both versions
@@ -79,6 +90,7 @@ export class SyncEngine {
       await this.pull(report);
       this.cb.onStatus("pushing…");
       await this.push(report);
+      this.state.lastSyncAt = Date.now();
       await this.cb.saveState();
       const at = new Date().toTimeString().slice(0, 5);
       this.cb.onStatus(report.errors.length ? `errors (${report.errors.length})` : `synced ${at}`);
@@ -96,8 +108,13 @@ export class SyncEngine {
   // ---- pull ----------------------------------------------------------------
 
   private async pull(report: SyncReport): Promise<void> {
+    const startCursor = this.state.cursor;
+    let processed = 0;
     for (;;) {
       const page = await this.api.changes(this.vaultId(), this.state.cursor);
+      // Recomputed per page in case latest_revision creeps forward from a
+      // concurrent commit mid-pull — good enough for a progress estimate.
+      const total = Math.max(page.changes.length, page.latest_revision - startCursor);
       const blobs = await this.prefetchBlobs(page.changes, report);
       for (const change of page.changes) {
         try {
@@ -106,6 +123,10 @@ export class SyncEngine {
           report.errors.push(`pull ${change.file_id}: ${e}`);
         }
         this.state.cursor = Math.max(this.state.cursor, change.revision);
+        processed++;
+        if (processed % 5 === 0 || processed === total) {
+          this.cb.onStatus(progressText("pulling", processed, total));
+        }
       }
       await this.cb.saveState();
       if (!page.has_more) {
@@ -255,21 +276,35 @@ export class SyncEngine {
 
     const excludes = this.cb.excludes();
     const localFiles = this.app.vault.getFiles().filter((f) => !isExcluded(f.path, excludes));
-    const seen = new Set<string>();
+    const seen = new Set<string>(localFiles.map((f) => f.path));
 
-    for (const file of localFiles) {
-      seen.add(file.path);
-      try {
-        await this.pushFile(file, byPath.get(file.path), report);
-      } catch (e) {
-        if (e instanceof ApiError && e.code === "version_conflict") {
-          // Another device won the race; next sync cycle pulls then re-pushes.
-          report.errors.push(`deferred (conflict): ${file.path}`);
-        } else {
-          report.errors.push(`push ${file.path}: ${e}`);
+    // Each pushFile does its own presign+PUT+commit round trip — the API has
+    // no batch-upload endpoint (unlike downloads), but commits are already
+    // serialized per vault server-side (CommitFileChange locks the vault
+    // row), so running several files concurrently here is safe: their
+    // presign+PUT phases genuinely overlap, only commit briefly queues.
+    let processed = 0;
+    let next = 0;
+    const worker = async () => {
+      while (next < localFiles.length) {
+        const file = localFiles[next++];
+        try {
+          await this.pushFile(file, byPath.get(file.path), report);
+        } catch (e) {
+          if (e instanceof ApiError && e.code === "version_conflict") {
+            // Another device won the race; next sync cycle pulls then re-pushes.
+            report.errors.push(`deferred (conflict): ${file.path}`);
+          } else {
+            report.errors.push(`push ${file.path}: ${e}`);
+          }
+        }
+        processed++;
+        if (processed % 5 === 0 || processed === localFiles.length) {
+          this.cb.onStatus(progressText("pushing", processed, localFiles.length));
         }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(PUSH_CONCURRENCY, localFiles.length) }, worker));
 
     // Anything indexed but no longer on disk was deleted locally. Excluded
     // paths are skipped — excluding a folder must not delete it remotely.
