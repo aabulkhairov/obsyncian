@@ -44,6 +44,7 @@ type FetchState<T> = null | { error: string } | T;
 export class ObsyncSettingTab extends PluginSettingTab {
   plugin: ObsyncPlugin;
   private pendingCode = "";
+  private pendingVaultName: string | null = null;
   // Nothing here fires a network request on its own — every section below
   // starts idle and only calls the API in response to a button press. That's
   // deliberate: opening Settings must never hang waiting on a server.
@@ -267,6 +268,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
   private displayVaultLink(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
+    if (this.pendingVaultName === null) this.pendingVaultName = this.app.vault.getName();
 
     new Setting(containerEl)
       .setName("Encryption passphrase")
@@ -285,22 +287,32 @@ export class ObsyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Vault name")
+      .setDesc("Shown in the vault picker on other devices. Defaults to this folder's name.")
+      .addText((text) =>
+        text.setValue(this.pendingVaultName!).onChange((value) => {
+          this.pendingVaultName = value;
+        })
+      );
+
+    new Setting(containerEl)
       .setName("Link a vault")
       .setDesc("Create a new synced vault on the server, or pick an existing one to pull it into this vault.")
       .addButton((btn) =>
-        btn.setButtonText(`Create "${this.app.vault.getName()}"`).setCta().onClick(async () => {
+        btn.setButtonText("Create vault").setCta().onClick(async () => {
+          const name = this.pendingVaultName?.trim() || this.app.vault.getName();
           try {
             let keyCheck: string | undefined;
             if (s.passphrase) {
               ({ keyCheck } = await makeKeyCheck(s.passphrase));
             }
-            const vault = await this.plugin.api.createVault(this.app.vault.getName(), keyCheck);
+            const vault = await this.plugin.api.createVault(name, keyCheck);
             s.vaultId = String(vault.id);
             s.vaultName = vault.name;
             s.vaultKeyCheck = keyCheck ?? "";
             this.plugin.invalidateCodec();
             await this.plugin.saveSettings();
-            new Notice(`Obsyncian: vault created and linked${keyCheck ? " (end-to-end encrypted)" : ""}.`);
+            new Notice(`Obsyncian: vault "${vault.name}" created and linked${keyCheck ? " (end-to-end encrypted)" : ""}.`);
             this.display();
           } catch (e) {
             new Notice(`Obsyncian: ${e}`);
