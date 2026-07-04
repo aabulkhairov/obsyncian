@@ -176,9 +176,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
         btn.setButtonText("Send code").setCta().onClick(async () => {
           try {
             await this.plugin.api.requestCode(s.email);
-            new Notice("Obsyncian: code sent — check your inbox.");
+            new Notice("Syncian: code sent — check your inbox.");
           } catch (e) {
-            new Notice(`Obsyncian: ${e}`);
+            new Notice(`Syncian: ${e}`);
           }
         })
       );
@@ -192,7 +192,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
             const res = await this.plugin.api.verify(s.email, this.pendingCode, this.deviceName());
             await this.completeLogin(res.token, res.identity ?? res.email, res.email);
           } catch (e) {
-            new Notice(`Obsyncian: ${e}`);
+            new Notice(`Syncian: ${e}`);
           }
         })
       );
@@ -221,7 +221,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
               const res = await this.plugin.api.verifyTelegram(tgCode, this.deviceName());
               await this.completeLogin(res.token, res.identity, res.email ?? "");
             } catch (e) {
-              new Notice(`Obsyncian: ${e}`);
+              new Notice(`Syncian: ${e}`);
             }
           })
         );
@@ -261,7 +261,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     s.identity = identity;
     if (email) s.email = email;
     await this.plugin.saveSettings();
-    new Notice("Obsyncian: logged in.");
+    new Notice("Syncian: logged in.");
     this.display();
   }
 
@@ -329,10 +329,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
       s.vaultKeyCheck = keyCheck ?? "";
       this.plugin.invalidateCodec();
       await this.plugin.saveSettings();
-      new Notice(`Obsyncian: vault "${vault.name}" created and linked${keyCheck ? " (end-to-end encrypted)" : " (unencrypted)"}.`);
+      new Notice(`Syncian: vault "${vault.name}" created and linked${keyCheck ? " (end-to-end encrypted)" : " (unencrypted)"}.`);
       this.display();
     } catch (e) {
-      new Notice(`Obsyncian: ${e}`);
+      new Notice(`Syncian: ${e}`);
     }
   }
 
@@ -353,13 +353,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
           if (!vault) return;
           if (vault.key_check) {
             if (!s.passphrase) {
-              new Notice("Obsyncian: this vault is encrypted — enter its passphrase above first.");
+              new Notice("Syncian: this vault is encrypted — enter its passphrase above first.");
               return;
             }
             try {
               await unlock(s.passphrase, vault.key_check);
             } catch (e) {
-              new Notice(`Obsyncian: ${e instanceof Error ? e.message : e}`);
+              new Notice(`Syncian: ${e instanceof Error ? e.message : e}`);
               return;
             }
           }
@@ -369,7 +369,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           Object.assign(this.plugin.syncState, emptySyncState());
           this.plugin.invalidateCodec();
           await this.plugin.saveSettings();
-          new Notice(`Obsyncian: linked "${s.vaultName}" — next sync will merge its contents into this vault.`);
+          new Notice(`Syncian: linked "${s.vaultName}" — next sync will merge its contents into this vault.`);
           this.display();
         });
         dd.setValue("");

@@ -15,7 +15,7 @@ export class ObsyncStatusView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Obsyncian";
+    return "Syncian";
   }
 
   getIcon(): string {
@@ -36,11 +36,11 @@ export class ObsyncStatusView extends ItemView {
     el.empty();
     el.addClass("obsync-status-view");
 
-    el.createEl("h4", { text: "Obsyncian" });
+    el.createEl("h4", { text: "Syncian" });
 
     if (!this.plugin.connected) {
       el.createEl("p", {
-        text: "Not connected — open Settings → Obsyncian to log in and link a vault.",
+        text: "Not connected — open Settings → Syncian to log in and link a vault.",
         cls: "obsync-muted",
       });
       return;

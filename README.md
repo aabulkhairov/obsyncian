@@ -1,4 +1,4 @@
-# Obsyncian
+# Syncian — by Obsyncian
 
 ![Obsyncian — end-to-end encrypted sync and backup for your Obsidian vault](images/banner.svg)
 
@@ -24,7 +24,7 @@
 
 ## Getting started
 
-1. Install and enable the plugin, then open **Settings → Obsyncian**.
+1. Install and enable the plugin, then open **Settings → Syncian**.
 2. Log in with Telegram: press **Continue with Telegram**, open the bot, and enter the code it sends you. (Email codes work too.)
 3. Set an encryption passphrase (strongly recommended — this is what makes your data unreadable to us).
 4. Create a synced vault, or link an existing one from another device.

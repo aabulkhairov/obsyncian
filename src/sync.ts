@@ -238,7 +238,7 @@ export class SyncEngine {
           mtime: 0, size: -1, // …but force the push scan to re-hash and upload local
         });
         report.conflicts++;
-        new Notice(`Obsyncian: conflict on ${path} — saved a conflict copy.`);
+        new Notice(`Syncian: conflict on ${path} — saved a conflict copy.`);
         return;
       }
     }

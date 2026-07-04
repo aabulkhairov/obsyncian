@@ -46,7 +46,7 @@ export default class ObsyncPlugin extends Plugin {
     this.addSettingTab(new ObsyncSettingTab(this.app, this));
 
     this.registerView(VIEW_TYPE_OBSYNC, (leaf) => new ObsyncStatusView(leaf, this));
-    this.addRibbonIcon("refresh-cw", "Obsyncian sync status", () => this.activateView());
+    this.addRibbonIcon("refresh-cw", "Syncian sync status", () => this.activateView());
     this.addCommand({ id: "open-status", name: "Open sync status", callback: () => this.activateView() });
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
@@ -84,7 +84,7 @@ export default class ObsyncPlugin extends Plugin {
       this.codecCache = new PlainCodec();
     } else {
       if (!this.settings.passphrase) {
-        throw new Error("This vault is encrypted — enter its passphrase in Settings → Obsyncian.");
+        throw new Error("This vault is encrypted — enter its passphrase in Settings → Syncian.");
       }
       const key = await unlock(this.settings.passphrase, this.settings.vaultKeyCheck);
       this.codecCache = new CryptoCodec(key);
@@ -96,12 +96,12 @@ export default class ObsyncPlugin extends Plugin {
   // still works — pressing the button is explicit enough intent.
   async syncNow(quiet = false) {
     if (!this.connected) {
-      if (!quiet) new Notice("Obsyncian: connect your account first (Settings → Obsyncian).");
+      if (!quiet) new Notice("Syncian: connect your account first (Settings → Syncian).");
       return;
     }
     if (quiet && this.settings.paused) return;
     if (this.engine.busy) {
-      if (!quiet) new Notice("Obsyncian: a sync is already running.");
+      if (!quiet) new Notice("Syncian: a sync is already running.");
       return;
     }
     try {
@@ -112,7 +112,7 @@ export default class ObsyncPlugin extends Plugin {
         this.lastReportAt = Date.now();
       }
       if (!quiet && report) {
-        new Notice(`Obsyncian: ↓${report.pulled} ↑${report.pushed}` +
+        new Notice(`Syncian: ↓${report.pulled} ↑${report.pushed}` +
           (report.conflicts ? `, ${report.conflicts} conflict(s)` : "") +
           (report.errors.length ? `, ${report.errors.length} error(s) — see console` : ""));
       }
@@ -121,7 +121,7 @@ export default class ObsyncPlugin extends Plugin {
       console.error("[obsync] sync failed:", e);
       this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, errors: [String(e)] };
       this.lastReportAt = Date.now();
-      if (!quiet) new Notice(`Obsyncian: sync failed — ${e}`);
+      if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
     } finally {
       if (this.settings.paused) this.setStatus("paused");
     }
@@ -136,13 +136,13 @@ export default class ObsyncPlugin extends Plugin {
       this.setStatus(this.settings.paused ? "paused" : "idle");
     }
     new Notice(this.settings.paused
-      ? "Obsyncian: sync paused — auto-sync is off until you resume."
-      : "Obsyncian: sync resumed.");
+      ? "Syncian: sync paused — auto-sync is off until you resume."
+      : "Syncian: sync resumed.");
     if (!this.settings.paused) void this.syncNow(true);
   }
 
   setStatus(text: string) {
-    this.statusBarEl.setText(`Obsyncian: ${text}`);
+    this.statusBarEl.setText(`Syncian: ${text}`);
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OBSYNC)) {
       if (leaf.view instanceof ObsyncStatusView) leaf.view.setStatus(text);
     }
