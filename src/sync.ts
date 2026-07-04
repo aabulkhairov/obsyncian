@@ -49,6 +49,10 @@ const DOWNLOAD_BATCH = 100; // matches server MAX_BATCH in downloads_controller.
 const DOWNLOAD_CONCURRENCY = 8;
 const PUSH_CONCURRENCY = 6;
 const PROGRESS_BAR_WIDTH = 10;
+// How often (in processed items) pull/push force a real event-loop yield so
+// the status bar/sidebar actually repaints mid-run — see the comments at
+// each call site for why this is needed at all.
+const PROGRESS_YIELD_EVERY = 25;
 
 function progressText(prefix: string, current: number, total: number): string {
   if (total <= 0) return prefix;
@@ -56,6 +60,13 @@ function progressText(prefix: string, current: number, total: number): string {
   const filled = Math.round((PROGRESS_BAR_WIDTH * pct) / 100);
   const bar = "▰".repeat(filled) + "▱".repeat(PROGRESS_BAR_WIDTH - filled);
   return `${prefix} ${bar} ${current}/${total}`;
+}
+
+// A plain `await Promise.resolve()` only flushes the microtask queue, which
+// isn't enough to let Obsidian's renderer actually paint a DOM update — a
+// real macrotask boundary (setTimeout) is what's needed.
+function yieldToRenderer(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 // One pull+push cycle over the whole vault. Deliberately boring: no partial
@@ -127,6 +138,14 @@ export class SyncEngine {
         if (processed % 5 === 0 || processed === total) {
           this.cb.onStatus(progressText("pulling", processed, total));
         }
+        // Applying an already-known change (self-echo, matching hash) never
+        // awaits real network/disk I/O, so a big run of them can process a
+        // whole page without the event loop ever getting back to the
+        // renderer — the status text updates in the DOM, but the screen
+        // never repaints until something actually yields, making progress
+        // look like it jumps in page-sized (500) chunks instead of
+        // counting up smoothly. A periodic real yield fixes that.
+        if (processed % PROGRESS_YIELD_EVERY === 0) await yieldToRenderer();
       }
       await this.cb.saveState();
       if (!page.has_more) {
@@ -308,6 +327,10 @@ export class SyncEngine {
         if (processed % 5 === 0 || processed === localFiles.length) {
           this.cb.onStatus(progressText("pushing", processed, localFiles.length));
         }
+        // See the matching comment in pull() — unchanged files skip instantly
+        // (no real I/O to await), which can starve the renderer of a chance
+        // to actually paint the updated status text.
+        if (processed % PROGRESS_YIELD_EVERY === 0) await yieldToRenderer();
       }
     };
     await Promise.all(Array.from({ length: Math.min(PUSH_CONCURRENCY, localFiles.length) }, worker));

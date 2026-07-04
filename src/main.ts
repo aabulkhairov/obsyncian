@@ -19,6 +19,7 @@ export default class ObsyncPlugin extends Plugin {
   statusBarEl!: HTMLElement;
   lastReport: SyncReport | null = null;
   lastReportAt: number | null = null;
+  private pendingSync = false;
 
   async onload() {
     await this.loadPersisted();
@@ -101,6 +102,12 @@ export default class ObsyncPlugin extends Plugin {
     }
     if (quiet && this.settings.paused) return;
     if (this.engine.busy) {
+      // Don't just drop this — a file changed (or the periodic timer fired)
+      // while a sync was already running, and nothing else guarantees that
+      // change gets picked up soon. Run once more right after the current
+      // cycle finishes instead of waiting for the next file event or the
+      // next interval tick, which could be minutes away.
+      this.pendingSync = true;
       if (!quiet) new Notice("Syncian: a sync is already running.");
       return;
     }
@@ -124,6 +131,10 @@ export default class ObsyncPlugin extends Plugin {
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
     } finally {
       if (this.settings.paused) this.setStatus("paused");
+      if (this.pendingSync) {
+        this.pendingSync = false;
+        void this.syncNow(true);
+      }
     }
   }
 
