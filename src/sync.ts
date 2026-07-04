@@ -1,4 +1,4 @@
-import { App, Notice, TFile, Vault } from "obsidian";
+import { App, Notice, TFile, Vault, normalizePath } from "obsidian";
 import { ApiClient, ApiError, ChangeRecord } from "./api";
 import { Codec } from "./codec";
 import { conflictPath, dirname, sha256Hex } from "./util";
@@ -189,7 +189,8 @@ export class SyncEngine {
       return;
     }
 
-    const path = await this.codec.decodePath(change.encrypted_path);
+    // Remote paths come from another device — normalize before touching disk.
+    const path = normalizePath(await this.codec.decodePath(change.encrypted_path));
     if (isExcluded(path, this.cb.excludes())) return;
 
     // Pure rename: same content, new path.
@@ -228,7 +229,7 @@ export class SyncEngine {
       if (locallyModified) {
         // Both sides changed: keep the local file (it will be pushed as the
         // next version), park the remote version in a conflict copy.
-        const copy = conflictPath(path);
+        const copy = normalizePath(conflictPath(path));
         await this.app.vault.createBinary(copy, plaintext);
         this.updateEntry(change.file_id, {
           path, version: change.version,
@@ -381,7 +382,7 @@ export class SyncEngine {
     const parts = dir.split("/");
     let current = "";
     for (const part of parts) {
-      current = current ? `${current}/${part}` : part;
+      current = normalizePath(current ? `${current}/${part}` : part);
       if (!this.app.vault.getAbstractFileByPath(current)) {
         try {
           await this.app.vault.createFolder(current);

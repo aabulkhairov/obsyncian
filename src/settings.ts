@@ -1,4 +1,4 @@
-import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
+import { App, Modal, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import { vaultLabel } from "./api";
 import { makeKeyCheck, unlock } from "./crypto";
 import type ObsyncPlugin from "./main";
@@ -300,27 +300,41 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .setDesc("Create a new synced vault on the server, or pick an existing one to pull it into this vault.")
       .addButton((btn) =>
         btn.setButtonText("Create vault").setCta().onClick(async () => {
-          const name = this.pendingVaultName?.trim() || this.app.vault.getName();
-          try {
-            let keyCheck: string | undefined;
-            if (s.passphrase) {
-              ({ keyCheck } = await makeKeyCheck(s.passphrase));
-            }
-            const vault = await this.plugin.api.createVault(name, keyCheck);
-            s.vaultId = String(vault.id);
-            s.vaultName = vault.name;
-            s.vaultKeyCheck = keyCheck ?? "";
-            this.plugin.invalidateCodec();
-            await this.plugin.saveSettings();
-            new Notice(`Obsyncian: vault "${vault.name}" created and linked${keyCheck ? " (end-to-end encrypted)" : ""}.`);
-            this.display();
-          } catch (e) {
-            new Notice(`Obsyncian: ${e}`);
+          // Encryption must be a decision, not an accident of an empty field:
+          // with no passphrase, make the user explicitly pick plaintext.
+          if (!s.passphrase) {
+            new UnencryptedConfirmModal(this.app, (syncPlaintext) => {
+              if (syncPlaintext) this.createVault();
+              // "Set a passphrase" → just stay on the tab; field is right above.
+            }).open();
+            return;
           }
+          await this.createVault();
         })
       );
 
     this.displayExistingVaults(containerEl, s);
+  }
+
+  private async createVault(): Promise<void> {
+    const s = this.plugin.settings;
+    const name = this.pendingVaultName?.trim() || this.app.vault.getName();
+    try {
+      let keyCheck: string | undefined;
+      if (s.passphrase) {
+        ({ keyCheck } = await makeKeyCheck(s.passphrase));
+      }
+      const vault = await this.plugin.api.createVault(name, keyCheck);
+      s.vaultId = String(vault.id);
+      s.vaultName = vault.name;
+      s.vaultKeyCheck = keyCheck ?? "";
+      this.plugin.invalidateCodec();
+      await this.plugin.saveSettings();
+      new Notice(`Obsyncian: vault "${vault.name}" created and linked${keyCheck ? " (end-to-end encrypted)" : " (unencrypted)"}.`);
+      this.display();
+    } catch (e) {
+      new Notice(`Obsyncian: ${e}`);
+    }
   }
 
   // Only calls the API once "Load existing vaults" is pressed.
@@ -380,5 +394,40 @@ export class ObsyncSettingTab extends PluginSettingTab {
         this.display();
       })
     );
+  }
+}
+
+// Shown when "Create vault" is pressed with an empty passphrase — plaintext
+// sync stays available, but it has to be an explicit choice, never a default
+// someone stumbles into by skipping a field.
+class UnencryptedConfirmModal extends Modal {
+  constructor(app: App, private onChoice: (syncPlaintext: boolean) => void) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("Sync without encryption?");
+    this.contentEl.createEl("p", {
+      text: "You haven't set an encryption passphrase. Without one, your notes are stored unencrypted on our servers — we could technically read them.",
+    });
+    this.contentEl.createEl("p", {
+      text: "With a passphrase, notes and file names are end-to-end encrypted on your device. The trade-off: if you lose the passphrase, your synced data is unrecoverable.",
+    });
+
+    const buttons = this.contentEl.createDiv({ cls: "modal-button-container" });
+    const setBtn = buttons.createEl("button", { text: "Set a passphrase", cls: "mod-cta" });
+    setBtn.onclick = () => {
+      this.close();
+      this.onChoice(false);
+    };
+    const plainBtn = buttons.createEl("button", { text: "Sync unencrypted" });
+    plainBtn.onclick = () => {
+      this.close();
+      this.onChoice(true);
+    };
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16161e"/>
+      <stop offset="1" stop-color="#1e1e2e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#67e8f9"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="320" fill="url(#bg)"/>
+  <g opacity="0.12" stroke="#a78bfa" stroke-width="1.5" fill="none">
+    <circle cx="1120" cy="60" r="120"/>
+    <circle cx="1120" cy="60" r="180"/>
+    <circle cx="1120" cy="60" r="240"/>
+    <circle cx="160" cy="290" r="100"/>
+    <circle cx="160" cy="290" r="160"/>
+  </g>
+  <g transform="translate(96, 96)">
+    <rect x="0" y="8" width="64" height="80" rx="12" fill="none" stroke="url(#accent)" stroke-width="5"/>
+    <path d="M 18 48 L 30 60 L 50 34" fill="none" stroke="url(#accent)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="200" y="150" font-family="-apple-system, 'Segoe UI', Roboto, sans-serif" font-size="64" font-weight="800" fill="#e8e8f0" letter-spacing="-1">Ob<tspan fill="url(#accent)">sync</tspan>ian</text>
+  <text x="200" y="200" font-family="-apple-system, 'Segoe UI', Roboto, sans-serif" font-size="26" fill="#a0a0b8">End-to-end encrypted sync and backup for your Obsidian vault</text>
+  <text x="200" y="244" font-family="-apple-system, 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#6f6f8a">Zero setup · Conflict-safe · Desktop and mobile · Pay with card, crypto, or rubles</text>
+</svg>

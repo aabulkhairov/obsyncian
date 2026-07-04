@@ -18,6 +18,11 @@ export class Notice {
 
 export const Platform = { isMobile: false };
 
+// Mirrors Obsidian's normalizePath: forward slashes, collapse repeats, trim edges.
+export function normalizePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
 export function debounce<T extends (...args: unknown[]) => unknown>(fn: T): T {
   return fn;
 }
@@ -55,6 +60,13 @@ export class Vault {}
 export class App {}
 export class PluginSettingTab {}
 export class Setting {}
+export class Modal {
+  titleEl = { setText: (_: string) => {} };
+  contentEl = { createEl: () => ({}), createDiv: () => ({ createEl: () => ({}) }), empty: () => {} };
+  constructor(public app?: unknown) {}
+  open(): void {}
+  close(): void {}
+}
 export class Plugin {}
 
 let clock = 1000;

@@ -4,7 +4,6 @@ import { Codec, PlainCodec } from "./codec";
 import { CryptoCodec, unlock } from "./crypto";
 import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, parseExcludes } from "./settings";
 import { SyncEngine, SyncReport, SyncState, emptySyncState } from "./sync";
-import { checkForUpdate, fetchStyles } from "./updater";
 import { ObsyncStatusView, VIEW_TYPE_OBSYNC } from "./view";
 
 interface PersistedData {
@@ -52,11 +51,9 @@ export default class ObsyncPlugin extends Plugin {
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
     this.addCommand({ id: "toggle-pause", name: "Pause/resume sync", callback: () => this.togglePause() });
-    this.addCommand({ id: "check-for-update", name: "Check for updates", callback: () => this.checkForPluginUpdate(true) });
 
     const scheduleSync = debounce(() => this.syncNow(true), 5_000, true);
     this.app.workspace.onLayoutReady(() => {
-      this.checkForPluginUpdate();
       if (!this.connected) return;
       this.syncNow(true);
       this.registerEvent(this.app.vault.on("create", scheduleSync));
@@ -166,61 +163,6 @@ export default class ObsyncPlugin extends Plugin {
     const leaf = this.app.workspace.getRightLeaf(false);
     await leaf?.setViewState({ type: VIEW_TYPE_OBSYNC, active: true });
     if (leaf) this.app.workspace.revealLeaf(leaf);
-  }
-
-  // Beta/manual-install update path: pulls the latest build from the same
-  // server the plugin already talks to and overwrites its own files on
-  // disk if it's newer, then reloads itself. Irrelevant once the plugin is
-  // in the official community directory — Obsidian's own updater takes
-  // over at that point.
-  async checkForPluginUpdate(manual = false) {
-    try {
-      const dir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
-      const result = await checkForUpdate(
-        this.settings.serverUrl,
-        this.manifest.version,
-        (path, data) => this.app.vault.adapter.write(path, data),
-        dir
-      );
-      if (result.updated) {
-        new Notice(`Obsyncian: updated to v${result.version} — reloading…`);
-        await this.reloadSelf();
-      } else if (manual) {
-        new Notice("Obsyncian: already up to date.");
-      }
-      if (!result.updated) await this.repairStyles(dir);
-    } catch (e) {
-      console.warn("[obsync] update check failed:", e);
-      if (manual) new Notice(`Obsyncian: update check failed — ${e}`);
-    }
-  }
-
-  // Older updater builds only shipped main.js + manifest.json, leaving
-  // installs without styles.css (unstyled status panel). Backfill it once,
-  // and inject it live since Obsidian only reads styles.css at plugin load.
-  private async repairStyles(pluginDir: string) {
-    const path = `${pluginDir}/styles.css`;
-    if (await this.app.vault.adapter.exists(path)) return;
-    const css = await fetchStyles(this.settings.serverUrl);
-    if (!css) return;
-    await this.app.vault.adapter.write(path, css);
-    const styleEl = document.createElement("style");
-    styleEl.textContent = css;
-    document.head.appendChild(styleEl);
-    this.register(() => styleEl.remove());
-  }
-
-  private async reloadSelf() {
-    // Undocumented but stable API (same one BRAT/Hot Reload rely on) — a
-    // disable+enable cycle re-reads main.js from disk. Falls back to asking
-    // for a manual reload if a future Obsidian version removes it.
-    const plugins = (this.app as unknown as { plugins?: { disablePlugin?: Function; enablePlugin?: Function } }).plugins;
-    if (typeof plugins?.disablePlugin === "function" && typeof plugins?.enablePlugin === "function") {
-      await plugins.disablePlugin(this.manifest.id);
-      await plugins.enablePlugin(this.manifest.id);
-    } else {
-      new Notice("Obsyncian: please reload Obsidian to apply the update.");
-    }
   }
 
   async loadPersisted() {
