@@ -2,7 +2,7 @@ import { Notice, Platform, Plugin, debounce } from "obsidian";
 import { ApiClient } from "./api";
 import { Codec, PlainCodec } from "./codec";
 import { CryptoCodec, unlock } from "./crypto";
-import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, parseExcludes } from "./settings";
+import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, clampSyncInterval, parseExcludes } from "./settings";
 import { SyncEngine, SyncReport, SyncState, emptySyncState } from "./sync";
 import { ObsyncStatusView, VIEW_TYPE_OBSYNC } from "./view";
 
@@ -53,16 +53,24 @@ export default class ObsyncPlugin extends Plugin {
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
     this.addCommand({ id: "toggle-pause", name: "Pause/resume sync", callback: () => this.togglePause() });
 
+    // onLayoutReady fires exactly once per Obsidian session — it used to bail
+    // out here if not yet connected, which meant a device that installs the
+    // plugin and connects *within the same session* (the normal first-time
+    // flow: install → log in → link a vault, no restart in between) never
+    // got its file-watch listeners or the fallback timer registered at all,
+    // silently, until the next full Obsidian restart. syncNow() already
+    // no-ops quietly when not connected, so there's nothing unsafe about
+    // always registering — it just does nothing useful until you actually
+    // connect, then works immediately without needing a restart.
     const scheduleSync = debounce(() => void this.syncNow(true), 5_000, true);
     this.app.workspace.onLayoutReady(() => {
-      if (!this.connected) return;
       void this.syncNow(true);
       this.registerEvent(this.app.vault.on("create", scheduleSync));
       this.registerEvent(this.app.vault.on("modify", scheduleSync));
       this.registerEvent(this.app.vault.on("delete", scheduleSync));
       this.registerEvent(this.app.vault.on("rename", scheduleSync));
       this.registerInterval(
-        window.setInterval(() => this.syncNow(true), this.settings.syncIntervalMinutes * 60_000)
+        window.setInterval(() => void this.syncNow(true), this.settings.syncIntervalSeconds * 1000)
       );
     });
   }
@@ -194,6 +202,11 @@ export default class ObsyncPlugin extends Plugin {
   async loadPersisted() {
     const data = (await this.loadData()) as Partial<PersistedData> | null;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data?.settings);
+    // Older builds stored the interval in minutes; carry the value over once.
+    const stored = data?.settings as { syncIntervalMinutes?: number; syncIntervalSeconds?: number } | undefined;
+    if (stored?.syncIntervalMinutes && !stored.syncIntervalSeconds) {
+      this.settings.syncIntervalSeconds = clampSyncInterval(stored.syncIntervalMinutes * 60);
+    }
     this.syncState = data?.syncState ?? emptySyncState();
   }
 

@@ -13,10 +13,18 @@ export interface ObsyncSettings {
   vaultName: string;
   vaultKeyCheck: string; // non-empty = E2EE vault; holds salt + key-check JSON
   passphrase: string;
-  syncIntervalMinutes: number;
+  syncIntervalSeconds: number;
   excludedFolders: string;
   paused: boolean;
   reportErrors: boolean;
+}
+
+export const MIN_SYNC_INTERVAL_S = 15;
+export const MAX_SYNC_INTERVAL_S = 3600;
+
+export function clampSyncInterval(value: number): number {
+  if (Number.isNaN(value)) return DEFAULT_SETTINGS.syncIntervalSeconds;
+  return Math.min(MAX_SYNC_INTERVAL_S, Math.max(MIN_SYNC_INTERVAL_S, Math.round(value)));
 }
 
 export const DEFAULT_SETTINGS: ObsyncSettings = {
@@ -28,7 +36,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   vaultName: "",
   vaultKeyCheck: "",
   passphrase: "",
-  syncIntervalMinutes: 5,
+  syncIntervalSeconds: 300,
   excludedFolders: "",
   paused: false,
   reportErrors: true,
@@ -134,16 +142,22 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Sync interval")
-      .setDesc("Minutes between automatic syncs.")
-      .addSlider((slider) =>
-        slider
-          .setLimits(1, 60, 1)
-          .setValue(s.syncIntervalMinutes)
-          .onChange(async (value) => {
-            s.syncIntervalMinutes = value;
-            await this.plugin.saveSettings();
-          })
-      );
+      .setDesc(`Seconds between automatic syncs: ${MIN_SYNC_INTERVAL_S}–${MAX_SYNC_INTERVAL_S} (default 300 = 5 minutes).`)
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.inputEl.min = String(MIN_SYNC_INTERVAL_S);
+        text.inputEl.max = String(MAX_SYNC_INTERVAL_S);
+        text.setValue(String(s.syncIntervalSeconds)).onChange(async (value) => {
+          const parsed = parseInt(value, 10);
+          if (Number.isNaN(parsed)) return; // mid-typing; keep the last valid value
+          s.syncIntervalSeconds = clampSyncInterval(parsed);
+          await this.plugin.saveSettings();
+        });
+        // Snap the visible value to the clamped one when the field loses focus.
+        text.inputEl.addEventListener("blur", () => {
+          text.setValue(String(s.syncIntervalSeconds));
+        });
+      });
 
     new Setting(containerEl)
       .setName("Excluded folders")
