@@ -16,6 +16,7 @@ export interface ObsyncSettings {
   syncIntervalMinutes: number;
   excludedFolders: string;
   paused: boolean;
+  reportErrors: boolean;
 }
 
 export const DEFAULT_SETTINGS: ObsyncSettings = {
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   syncIntervalMinutes: 5,
   excludedFolders: "",
   paused: false,
+  reportErrors: true,
 };
 
 export function parseExcludes(excludedFolders: string): string[] {
@@ -149,6 +151,16 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .addTextArea((text) =>
         text.setPlaceholder("Private, Scratch").setValue(s.excludedFolders).onChange(async (value) => {
           s.excludedFolders = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Send anonymous error reports")
+      .setDesc("Helps us fix bugs faster. Never includes note content or file names — only technical details like a file ID, plugin version, and OS. On by default; turn off any time.")
+      .addToggle((toggle) =>
+        toggle.setValue(s.reportErrors).onChange(async (value) => {
+          s.reportErrors = value;
           await this.plugin.saveSettings();
         })
       );

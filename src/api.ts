@@ -119,6 +119,10 @@ export class ApiClient {
     return this.req("POST", `/v1/vaults/${vaultId}/downloads`, { file_ids: fileIds });
   }
 
+  reportError(payload: { message: string; context: string; plugin_version: string; platform: string }): Promise<void> {
+    return this.req("POST", "/v1/errors", payload);
+  }
+
   // Blob transfers go straight to R2, not through the API server. fetch (not
   // requestUrl) so large bodies stream properly; the bucket's CORS policy
   // allows Obsidian's origins.

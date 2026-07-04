@@ -1,4 +1,4 @@
-import { Notice, Plugin, debounce } from "obsidian";
+import { Notice, Platform, Plugin, debounce } from "obsidian";
 import { ApiClient } from "./api";
 import { Codec, PlainCodec } from "./codec";
 import { CryptoCodec, unlock } from "./crypto";
@@ -123,11 +123,15 @@ export default class ObsyncPlugin extends Plugin {
           (report.conflicts ? `, ${report.conflicts} conflict(s)` : "") +
           (report.errors.length ? `, ${report.errors.length} error(s) — see console` : ""));
       }
-      if (report?.errors.length) console.warn("[obsync] sync errors:", report.errors);
+      if (report?.errors.length) {
+        console.warn("[obsync] sync errors:", report.errors);
+        this.reportError("sync", report.errors.slice(0, 5).join("\n"));
+      }
     } catch (e) {
       console.error("[obsync] sync failed:", e);
       this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, errors: [String(e)] };
       this.lastReportAt = Date.now();
+      this.reportError("sync failed", String(e));
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
     } finally {
       if (this.settings.paused) this.setStatus("paused");
@@ -136,6 +140,17 @@ export default class ObsyncPlugin extends Plugin {
         void this.syncNow(true);
       }
     }
+  }
+
+  // Opt-out, on by default. Fire-and-forget: never awaited by a caller,
+  // never throws — a failure to report an error must never itself become
+  // an error. Only technical detail goes over the wire (error text, plugin
+  // version, coarse OS), never note content or file names.
+  reportError(context: string, message: string) {
+    if (!this.settings.reportErrors || !this.connected) return;
+    this.api
+      .reportError({ context, message, plugin_version: this.manifest.version, platform: platformString() })
+      .catch((e) => console.warn("[obsync] failed to report error:", e));
   }
 
   async togglePause() {
@@ -190,4 +205,13 @@ export default class ObsyncPlugin extends Plugin {
   async saveSettings() {
     await this.savePersisted();
   }
+}
+
+function platformString(): string {
+  if (Platform.isIosApp) return "ios";
+  if (Platform.isAndroidApp) return "android";
+  if (Platform.isMacOS) return "macos";
+  if (Platform.isWin) return "windows";
+  if (Platform.isLinux) return "linux";
+  return Platform.isMobile ? "mobile-other" : "desktop-other";
 }
