@@ -104,10 +104,18 @@ export class SyncEngine {
       this.state.lastSyncAt = Date.now();
       await this.cb.saveState();
       const at = new Date().toTimeString().slice(0, 5);
+      // Flip `running` false *before* announcing the terminal status — the
+      // sidebar re-renders in response to onStatus, reading `busy` at that
+      // exact moment. Doing this after (as the old `finally` block did) let
+      // a render land showing "synced HH:MM" (implying done) with the
+      // button still saying "Syncing…" (still busy) — an inconsistent
+      // snapshot that stuck until some unrelated later render corrected it.
+      this.running = false;
       this.cb.onStatus(report.errors.length ? `errors (${report.errors.length})` : `synced ${at}`);
       return report;
     } catch (e) {
       report.errors.push(String(e));
+      this.running = false;
       this.cb.onStatus("sync failed");
       throw e;
     } finally {

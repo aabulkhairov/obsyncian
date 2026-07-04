@@ -5,7 +5,11 @@ import { ApiClient } from "../src/api";
 import { Codec, PlainCodec } from "../src/codec";
 import { SyncEngine, emptySyncState } from "../src/sync";
 
-export function makeClient(server: FakeApi, codec: Codec = new PlainCodec()) {
+export function makeClient(
+  server: FakeApi,
+  codec: Codec = new PlainCodec(),
+  onStatus: (text: string) => void = () => {}
+) {
   const excluded: string[] = [];
   const app = new FakeApp();
   const engine = new SyncEngine(
@@ -14,7 +18,7 @@ export function makeClient(server: FakeApi, codec: Codec = new PlainCodec()) {
     async () => codec,
     () => "1",
     emptySyncState(),
-    { onStatus: () => {}, saveState: async () => {}, excludes: () => excluded }
+    { onStatus, saveState: async () => {}, excludes: () => excluded }
   );
   return { app, vault: app.vault, engine, excluded };
 }

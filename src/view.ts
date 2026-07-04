@@ -24,6 +24,11 @@ export class ObsyncStatusView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.render();
+    // "Last sync — Xm ago" is only recomputed when render() runs, which
+    // otherwise only happens on an actual status change — left open with
+    // nothing happening, it visibly freezes on a stale value (e.g. stuck
+    // on "3m ago" long after it's really been 10). Keep it honest.
+    this.registerInterval(window.setInterval(() => this.render(), 30_000));
   }
 
   setStatus(text: string): void {

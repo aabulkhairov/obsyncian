@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FakeApi } from "./fake-api";
 import { makeClient } from "./helpers";
 import { conflictPath } from "../src/util";
+import { PlainCodec } from "../src/codec";
 
 function setup() {
   const server = new FakeApi();
@@ -9,6 +10,22 @@ function setup() {
 }
 
 describe("SyncEngine", () => {
+  it("is no longer busy by the time the terminal status (synced/errors/failed) is announced", async () => {
+    const server = new FakeApi();
+    const busyAtEachStatus: boolean[] = [];
+    const { vault, engine } = makeClient(server, new PlainCodec(), () => busyAtEachStatus.push(engine.busy));
+    vault.write("Note.md", "hello");
+
+    await engine.sync();
+
+    // A sidebar/status-bar listener re-renders on every onStatus call, reading
+    // `busy` at that exact moment — if the terminal "synced …" status still
+    // reported busy=true, the UI could get stuck showing "Syncing…" next to
+    // a status line that already says the sync finished.
+    expect(busyAtEachStatus.length).toBeGreaterThan(0);
+    expect(busyAtEachStatus.at(-1)).toBe(false);
+  });
+
   it("propagates created files to a fresh client", async () => {
     const { a, b } = setup();
     a.vault.write("Note.md", "hello");
