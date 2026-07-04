@@ -20,7 +20,7 @@
 
 👥 **Share a vault** (paid plans): invite someone right from the Telegram bot — they accept with one tap and the vault appears in their plugin as "@you — Vault name". Revoke access just as easily.
 
-💳 **Payment that works where you live.** Bank card (₽, with auto-renew), or any cryptocurrency via Telegram's Crypto Bot. Free 100 MB tier — no card required.
+💳 **Payment that works where you live.** Bank card (₽, with auto-renew), or any cryptocurrency via Telegram's Crypto Bot. Free 50 MB tier — no card required.
 
 ## Getting started
 
@@ -45,7 +45,7 @@ Architecture: encrypted file bytes travel directly between your device and objec
 ## Disclosures (per Obsidian developer policies)
 
 - **Account required** for the plugin to function. A free tier is available.
-- **Payment required for full access.** Free: 100 MB, 1 vault. Paid plans (more storage, more vaults, larger files, vault sharing) are purchased outside the plugin via our [Telegram bot](https://t.me/ObsyncianOfficialBot) — crypto or bank card. When you exceed quota, sync stops accepting new data; existing data stays downloadable.
+- **Payment required for full access.** Free: 50 MB, 1 vault. Paid plans (more storage, more vaults, larger files, vault sharing) are purchased outside the plugin via our [Telegram bot](https://t.me/ObsyncianOfficialBot) — crypto or bank card. When you exceed quota, sync stops accepting new data; existing data stays downloadable.
 - **Network use.** The plugin talks to the Obsyncian API (`obsyncian.com` by default) for authentication and sync metadata, and transfers encrypted file data directly to Cloudflare R2 object storage via short-lived signed URLs. No other remote services are used.
 - **Server code.** This plugin is open source (MIT) — including all encryption code, which is auditable here. The server implementation is currently closed-source.
 - **Telemetry.** The plugin sends no telemetry. Server-side we keep operational records (account identity, request metadata, storage usage) as described in the [privacy policy](https://obsyncian.com/privacy).
