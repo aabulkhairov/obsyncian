@@ -22,14 +22,6 @@
 
 💳 **Payment that works where you live.** Bank card (₽, with auto-renew), or any cryptocurrency via Telegram's Crypto Bot. Free 100 MB tier — no card required.
 
-## Screenshots
-
-| Sync status panel | Settings |
-|---|---|
-| ![Live sync status, last sync report, pause button](images/status-panel.png) | ![Login, vault linking, encryption passphrase](images/settings.png) |
-
-*The sidebar panel shows live progress while syncing, a report of what moved (downloaded / uploaded / conflicts), and any errors — plus Pause/Resume for when you're on a metered connection.*
-
 ## Getting started
 
 1. Install and enable the plugin, then open **Settings → Obsyncian**.
