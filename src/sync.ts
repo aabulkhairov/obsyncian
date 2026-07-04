@@ -1,4 +1,4 @@
-import { App, Notice, TFile, Vault, normalizePath } from "obsidian";
+import { App, Notice, TFile, normalizePath } from "obsidian";
 import { ApiClient, ApiError, ChangeRecord } from "./api";
 import { Codec } from "./codec";
 import { conflictPath, dirname, sha256Hex } from "./util";
@@ -244,7 +244,11 @@ export class SyncEngine {
     }
 
     await this.writeLocal(path, plaintext);
-    const written = this.app.vault.getAbstractFileByPath(path) as TFile;
+    const written = this.app.vault.getAbstractFileByPath(path);
+    if (!(written instanceof TFile)) {
+      report.errors.push(`pull ${change.file_id}: wrote ${path} but can't stat it back`);
+      return;
+    }
     this.updateEntry(change.file_id, {
       path, version: change.version,
       localHash: await sha256Hex(plaintext),
@@ -260,7 +264,8 @@ export class SyncEngine {
     if (file instanceof TFile) {
       const localHash = await sha256Hex(await this.app.vault.readBinary(file));
       if (localHash === entry.localHash) {
-        await this.app.vault.trash(file, true);
+        // trashFile (not Vault.trash) respects the user's deletion preference.
+        await this.app.fileManager.trashFile(file);
         report.deletedLocal++;
       }
       // Locally modified since last sync: keep the file. Dropping the index

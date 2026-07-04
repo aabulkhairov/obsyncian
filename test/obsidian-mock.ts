@@ -83,12 +83,16 @@ interface Stored {
 // engine uses. Cast to App at the call site.
 export class FakeApp {
   vault: FakeVault;
-  fileManager: { renameFile: (file: TFile, newPath: string) => Promise<void> };
+  fileManager: {
+    renameFile: (file: TFile, newPath: string) => Promise<void>;
+    trashFile: (file: TFile) => Promise<void>;
+  };
 
   constructor() {
     this.vault = new FakeVault();
     this.fileManager = {
       renameFile: async (file: TFile, newPath: string) => this.vault._rename(file.path, newPath),
+      trashFile: async (file: TFile) => this.vault.trash(file, true),
     };
   }
 }
@@ -176,4 +180,10 @@ export class FakeVault {
     for (const [path, stored] of this.files) out[path] = new TextDecoder().decode(stored.bytes);
     return out;
   }
+}
+
+// Node test env has no `window`; the plugin uses window.setTimeout & co.
+// per Obsidian's popout-window guidance.
+if (typeof (globalThis as Record<string, unknown>).window === "undefined") {
+  (globalThis as Record<string, unknown>).window = globalThis;
 }

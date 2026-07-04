@@ -52,10 +52,10 @@ export default class ObsyncPlugin extends Plugin {
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
     this.addCommand({ id: "toggle-pause", name: "Pause/resume sync", callback: () => this.togglePause() });
 
-    const scheduleSync = debounce(() => this.syncNow(true), 5_000, true);
+    const scheduleSync = debounce(() => void this.syncNow(true), 5_000, true);
     this.app.workspace.onLayoutReady(() => {
       if (!this.connected) return;
-      this.syncNow(true);
+      void this.syncNow(true);
       this.registerEvent(this.app.vault.on("create", scheduleSync));
       this.registerEvent(this.app.vault.on("modify", scheduleSync));
       this.registerEvent(this.app.vault.on("delete", scheduleSync));
@@ -138,7 +138,7 @@ export default class ObsyncPlugin extends Plugin {
     new Notice(this.settings.paused
       ? "Obsyncian: sync paused — auto-sync is off until you resume."
       : "Obsyncian: sync resumed.");
-    if (!this.settings.paused) this.syncNow(true);
+    if (!this.settings.paused) void this.syncNow(true);
   }
 
   setStatus(text: string) {
@@ -157,12 +157,12 @@ export default class ObsyncPlugin extends Plugin {
   async activateView() {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_OBSYNC);
     if (existing.length) {
-      this.app.workspace.revealLeaf(existing[0]);
+      await this.app.workspace.revealLeaf(existing[0]);
       return;
     }
     const leaf = this.app.workspace.getRightLeaf(false);
     await leaf?.setViewState({ type: VIEW_TYPE_OBSYNC, active: true });
-    if (leaf) this.app.workspace.revealLeaf(leaf);
+    if (leaf) await this.app.workspace.revealLeaf(leaf);
   }
 
   async loadPersisted() {

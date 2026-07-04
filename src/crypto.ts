@@ -40,7 +40,7 @@ export async function deriveKey(passphrase: string, salt: Uint8Array): Promise<C
 export async function makeKeyCheck(passphrase: string): Promise<{ keyCheck: string; key: CryptoKey }> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await deriveKey(passphrase, salt);
-  const kcv = await encryptBytes(key, KCV_PLAINTEXT.buffer as ArrayBuffer);
+  const kcv = await encryptBytes(key, KCV_PLAINTEXT.buffer);
   const keyCheck: KeyCheck = { v: 1, salt: base64Encode(salt.buffer), kcv: base64Encode(kcv) };
   return { keyCheck: JSON.stringify(keyCheck), key };
 }
@@ -50,7 +50,7 @@ export async function makeKeyCheck(passphrase: string): Promise<{ keyCheck: stri
 export async function unlock(passphrase: string, keyCheckJson: string): Promise<CryptoKey> {
   let parsed: KeyCheck;
   try {
-    parsed = JSON.parse(keyCheckJson);
+    parsed = JSON.parse(keyCheckJson) as KeyCheck;
   } catch {
     throw new Error("Corrupt key_check on server.");
   }
@@ -68,7 +68,7 @@ export class CryptoCodec implements Codec {
   constructor(private key: CryptoKey) {}
 
   async encodePath(path: string): Promise<string> {
-    const ct = await encryptBytes(this.key, new TextEncoder().encode(path).buffer as ArrayBuffer);
+    const ct = await encryptBytes(this.key, new TextEncoder().encode(path).buffer);
     return base64Encode(ct);
   }
 
@@ -106,7 +106,7 @@ async function decryptBytes(key: CryptoKey, data: ArrayBuffer, offset = 0): Prom
   const bytes = new Uint8Array(data);
   const iv = bytes.subarray(offset, offset + IV_LENGTH);
   const ct = bytes.subarray(offset + IV_LENGTH);
-  return crypto.subtle.decrypt({ name: "AES-GCM", iv: iv as BufferSource }, key, ct as BufferSource);
+  return crypto.subtle.decrypt({ name: "AES-GCM", iv: iv as BufferSource }, key, ct);
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {

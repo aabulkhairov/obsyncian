@@ -1,6 +1,6 @@
 {
   "name": "obsync",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Affordable end-to-end encrypted vault sync for Obsidian",
   "main": "main.js",
   "scripts": {
@@ -17,7 +17,6 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "builtin-modules": "^4.0.0",
     "esbuild": "^0.24.0",
     "obsidian": "latest",
     "tslib": "^2.8.0",

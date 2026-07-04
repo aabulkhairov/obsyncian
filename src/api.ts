@@ -58,13 +58,13 @@ const BLOB_TIMEOUT_MS = 120_000;
 
 export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(
+    const timer = window.setTimeout(
       () => reject(new ApiError(0, "timeout", `No response after ${ms / 1000}s — is the server reachable?`)),
       ms
     );
     promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); }
+      (v) => { window.clearTimeout(timer); resolve(v); },
+      (e: unknown) => { window.clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); }
     );
   });
 }
@@ -149,7 +149,8 @@ export class ApiClient {
       let code = "http_error";
       let message = `HTTP ${res.status}`;
       try {
-        const err = res.json?.error;
+        const parsed = res.json as { error?: { code?: string; message?: string } } | undefined;
+        const err = parsed?.error;
         if (err) {
           code = err.code ?? code;
           message = err.message ?? message;

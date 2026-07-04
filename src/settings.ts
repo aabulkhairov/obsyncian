@@ -137,7 +137,6 @@ export class ObsyncSettingTab extends PluginSettingTab {
         slider
           .setLimits(1, 60, 1)
           .setValue(s.syncIntervalMinutes)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             s.syncIntervalMinutes = value;
             await this.plugin.saveSettings();
@@ -304,7 +303,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           // with no passphrase, make the user explicitly pick plaintext.
           if (!s.passphrase) {
             new UnencryptedConfirmModal(this.app, (syncPlaintext) => {
-              if (syncPlaintext) this.createVault();
+              if (syncPlaintext) void this.createVault();
               // "Set a passphrase" → just stay on the tab; field is right above.
             }).open();
             return;
