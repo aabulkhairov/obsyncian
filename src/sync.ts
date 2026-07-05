@@ -1,7 +1,10 @@
 import { App, Notice, TFile, normalizePath } from "obsidian";
 import { ApiClient, ApiError, ChangeRecord } from "./api";
+import { BaseStore } from "./basestore";
+import { ConfigFile, ConfigStore } from "./configstore";
 import { Codec } from "./codec";
-import { conflictPath, dirname, sha256Hex } from "./util";
+import { isMergeablePath, merge3, tryDecodeUtf8 } from "./merge";
+import { conflictPath, dirname, hasForbiddenNameChars, sha256Hex } from "./util";
 
 export interface IndexEntry {
   path: string;
@@ -28,13 +31,19 @@ export interface SyncReport {
   deletedLocal: number;
   deletedRemote: number;
   conflicts: number;
+  merged: number; // concurrent edits resolved by a clean 3-way merge
   errors: string[];
+  // Remote files this device can never write: their names contain
+  // characters Obsidian forbids (created outside Obsidian on the source
+  // device). Skipped up front — no download, no per-cycle error spam.
+  unwritablePaths: string[];
 }
 
 interface SyncCallbacks {
   onStatus(text: string): void;
   saveState(): Promise<void>;
   excludes(): string[]; // folder prefixes to skip, e.g. ["Private", "Attachments/Huge"]
+  syncConfig(): boolean; // sync the .obsidian config folder (plugins/themes/settings)?
 }
 
 export function isExcluded(path: string, excludes: string[]): boolean {
@@ -69,8 +78,10 @@ function yieldToRenderer(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// One pull+push cycle over the whole vault. Deliberately boring: no partial
-// merges, no CRDTs. Conflicts produce a "(conflict …)" copy and both versions
+// One pull+push cycle over the whole vault. No CRDTs: concurrent edits to a
+// text file are resolved with a line-based 3-way merge against the shadow
+// base (last-synced plaintext); overlapping edits — and everything
+// non-mergeable — still produce a "(conflict …)" copy where both versions
 // survive. A local rename is pushed as delete+create (no history linkage).
 export class SyncEngine {
   private running = false;
@@ -84,6 +95,8 @@ export class SyncEngine {
     private codecProvider: () => Promise<Codec>,
     private vaultId: () => string,
     private state: SyncState,
+    private base: BaseStore,
+    private configStore: ConfigStore,
     private cb: SyncCallbacks
   ) {}
 
@@ -94,13 +107,14 @@ export class SyncEngine {
   async sync(): Promise<SyncReport | null> {
     if (this.running) return null;
     this.running = true;
-    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, errors: [] };
+    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [], unwritablePaths: [] };
     try {
       this.codec = await this.codecProvider();
       this.cb.onStatus("pulling…");
       await this.pull(report);
       this.cb.onStatus("pushing…");
       await this.push(report);
+      if (this.cb.syncConfig()) await this.pushConfig(report);
       this.state.lastSyncAt = Date.now();
       await this.cb.saveState();
       const at = new Date().toTimeString().slice(0, 5);
@@ -170,13 +184,31 @@ export class SyncEngine {
   // applyRemoteChange would skip anyway (self-echo, pure renames).
   private async prefetchBlobs(changes: ChangeRecord[], report: SyncReport): Promise<Map<string, ArrayBuffer>> {
     const blobs = new Map<string, ArrayBuffer>();
-    const need = changes.filter((c) => {
+    const candidates = changes.filter((c) => {
       if (c.deleted) return false;
       const entry = this.state.files[c.file_id];
       if (entry && entry.version >= c.version) return false;
       if (entry && entry.remoteHash === c.ciphertext_hash) return false;
       return true;
     });
+
+    // Filter out files this device can never write BEFORE downloading —
+    // otherwise their blobs get re-fetched every single cycle (the write
+    // fails, the index never advances). Decoding a path is just a small
+    // AES operation; downloading a blob is real bandwidth.
+    const need: ChangeRecord[] = [];
+    for (const c of candidates) {
+      const path = await this.codec.decodePath(c.encrypted_path);
+      // Config files when the toggle is off: never applied, so don't spend
+      // bandwidth fetching their blobs (the change is skipped and the cursor
+      // advances regardless).
+      if (this.configStore.owns(path) && !this.cb.syncConfig()) continue;
+      if (hasForbiddenNameChars(path)) {
+        if (!report.unwritablePaths.includes(path)) report.unwritablePaths.push(path);
+      } else {
+        need.push(c);
+      }
+    }
     if (!need.length) return blobs;
 
     const urls = new Map<string, string>();
@@ -218,7 +250,22 @@ export class SyncEngine {
 
     // Remote paths come from another device — normalize before touching disk.
     const path = normalizePath(await this.codec.decodePath(change.encrypted_path));
+
+    // Config files (.obsidian/…) live outside the Vault file tree and take a
+    // separate adapter-based path. When the toggle is off we ignore them
+    // entirely (the cursor still advances, so we don't re-see them).
+    if (this.configStore.owns(path)) {
+      if (this.cb.syncConfig()) await this.applyRemoteConfigChange(change, entry, path, report, blobs);
+      return;
+    }
+
     if (isExcluded(path, this.cb.excludes())) return;
+    // Covers the paths prefetch already skipped, plus renames TO a
+    // forbidden name (which need no blob but would still fail to write).
+    if (hasForbiddenNameChars(path)) {
+      if (!report.unwritablePaths.includes(path)) report.unwritablePaths.push(path);
+      return;
+    }
 
     // Pure rename: same content, new path.
     if (entry && entry.remoteHash === change.ciphertext_hash && entry.path !== path) {
@@ -249,13 +296,36 @@ export class SyncEngine {
           remoteHash: change.ciphertext_hash,
           mtime: localFile.stat.mtime, size: localFile.stat.size,
         });
+        await this.saveBase(change.file_id, path, plaintext);
         return;
       }
 
       const locallyModified = !entry || entry.localHash !== localHash || entry.path !== path;
       if (locallyModified) {
-        // Both sides changed: keep the local file (it will be pushed as the
-        // next version), park the remote version in a conflict copy.
+        // Both sides changed. For text files, try a line-based 3-way merge
+        // against the shadow base (the last plaintext both sides agreed on);
+        // if local and remote touched disjoint lines the result replaces the
+        // local file and gets pushed as the next version — no conflict copy.
+        const merged = entry && isMergeablePath(path)
+          ? await this.tryMerge(change.file_id, entry, localBytes, plaintext)
+          : null;
+        if (merged !== null) {
+          await this.writeLocal(path, merged);
+          this.updateEntry(change.file_id, {
+            path, version: change.version,
+            localHash: remotePlainHash, // remote is the new synced base…
+            remoteHash: change.ciphertext_hash,
+            mtime: 0, size: -1, // …force the push scan to re-hash and upload the merge
+          });
+          await this.base.write(change.file_id, plaintext);
+          report.merged++;
+          new Notice(`Syncian: auto-merged concurrent edits in ${path}.`);
+          return;
+        }
+
+        // Overlapping edits or unmergeable content: keep the local file (it
+        // will be pushed as the next version), park the remote version in a
+        // conflict copy.
         const copy = normalizePath(conflictPath(path));
         await this.app.vault.createBinary(copy, plaintext);
         this.updateEntry(change.file_id, {
@@ -264,6 +334,7 @@ export class SyncEngine {
           remoteHash: change.ciphertext_hash,
           mtime: 0, size: -1, // …but force the push scan to re-hash and upload local
         });
+        await this.saveBase(change.file_id, path, plaintext);
         report.conflicts++;
         new Notice(`Syncian: conflict on ${path} — saved a conflict copy.`);
         return;
@@ -282,11 +353,133 @@ export class SyncEngine {
       remoteHash: change.ciphertext_hash,
       mtime: written.stat.mtime, size: written.stat.size,
     });
+    await this.saveBase(change.file_id, path, plaintext);
     report.pulled++;
+  }
+
+  // Config files (.obsidian/…) applied through the adapter. Non-mergeable by
+  // nature (.json/.js), so no 3-way merge and no shadow base — overlapping
+  // edits produce a conflict copy, same as binaries.
+  private async applyRemoteConfigChange(
+    change: ChangeRecord,
+    entry: IndexEntry | undefined,
+    path: string,
+    report: SyncReport,
+    blobs: Map<string, ArrayBuffer>
+  ): Promise<void> {
+    // Pure rename: same content, new path. Move the old file's bytes over
+    // (rename blobs aren't prefetched, so we must reuse what's on disk).
+    if (entry && entry.remoteHash === change.ciphertext_hash && entry.path !== path) {
+      const bytes = await this.configStore.read(entry.path).catch(() => null);
+      if (bytes) {
+        await this.configStore.remove(entry.path);
+        await this.configStore.write(path, bytes);
+      }
+      const st = await this.configStore.stat(path);
+      this.updateEntry(change.file_id, {
+        ...entry, path, version: change.version,
+        mtime: st?.mtime ?? 0, size: st?.size ?? -1,
+      });
+      report.pulled++;
+      return;
+    }
+
+    const remoteBytes = blobs.get(change.file_id);
+    if (!remoteBytes) return; // presign/fetch failed — already recorded in report.errors
+    const plaintext = await this.codec.decodeContent(remoteBytes);
+
+    let localBytes: ArrayBuffer | null = null;
+    try { localBytes = await this.configStore.read(path); } catch { localBytes = null; }
+
+    if (localBytes) {
+      const localHash = await sha256Hex(localBytes);
+      const remotePlainHash = await sha256Hex(plaintext);
+      if (localHash === remotePlainHash) {
+        const st = await this.configStore.stat(path);
+        this.updateEntry(change.file_id, {
+          path, version: change.version, localHash,
+          remoteHash: change.ciphertext_hash,
+          mtime: st?.mtime ?? 0, size: st?.size ?? -1,
+        });
+        return;
+      }
+      const locallyModified = !entry || entry.localHash !== localHash || entry.path !== path;
+      if (locallyModified) {
+        const copy = normalizePath(conflictPath(path));
+        await this.configStore.write(copy, plaintext);
+        this.updateEntry(change.file_id, {
+          path, version: change.version,
+          localHash: remotePlainHash, // pretend remote is the synced base…
+          remoteHash: change.ciphertext_hash,
+          mtime: 0, size: -1, // …but force the push scan to re-hash and upload local
+        });
+        report.conflicts++;
+        new Notice(`Syncian: conflict on ${path} — saved a conflict copy.`);
+        return;
+      }
+    }
+
+    await this.configStore.write(path, plaintext);
+    const st = await this.configStore.stat(path);
+    this.updateEntry(change.file_id, {
+      path, version: change.version,
+      localHash: await sha256Hex(plaintext),
+      remoteHash: change.ciphertext_hash,
+      mtime: st?.mtime ?? 0, size: st?.size ?? -1,
+    });
+    report.pulled++;
+  }
+
+  // Shadow only what can ever be merged; for anything else make sure no
+  // stale base survives (a rename can change a file's extension in place).
+  private async saveBase(fileId: string, path: string, bytes: ArrayBuffer): Promise<void> {
+    if (isMergeablePath(path)) {
+      await this.base.write(fileId, bytes);
+    } else {
+      await this.base.remove(fileId);
+    }
+  }
+
+  // Returns the merged bytes, or null when a clean merge isn't possible —
+  // base missing/stale (crash, plugin upgrade), non-UTF-8 content, or local
+  // and remote edits overlapping on the same lines.
+  private async tryMerge(
+    fileId: string,
+    entry: IndexEntry,
+    localBytes: ArrayBuffer,
+    remoteBytes: ArrayBuffer
+  ): Promise<ArrayBuffer | null> {
+    const baseBytes = await this.base.read(fileId);
+    if (!baseBytes || (await sha256Hex(baseBytes)) !== entry.localHash) return null;
+    const base = tryDecodeUtf8(baseBytes);
+    const local = tryDecodeUtf8(localBytes);
+    const remote = tryDecodeUtf8(remoteBytes);
+    if (base === null || local === null || remote === null) return null;
+    const merged = merge3(base, local, remote);
+    if (merged === null) return null;
+    return new TextEncoder().encode(merged).buffer as ArrayBuffer;
   }
 
   private async applyRemoteDelete(change: ChangeRecord, entry: IndexEntry | undefined, report: SyncReport): Promise<void> {
     if (!entry) return;
+
+    // Config files: delete via the adapter, and only when the toggle is on.
+    if (this.configStore.owns(entry.path)) {
+      if (!this.cb.syncConfig()) return; // toggle off: don't touch it, keep the index entry
+      let localBytes: ArrayBuffer | null = null;
+      try { localBytes = await this.configStore.read(entry.path); } catch { localBytes = null; }
+      if (localBytes) {
+        if ((await sha256Hex(localBytes)) === entry.localHash) {
+          await this.configStore.remove(entry.path);
+          report.deletedLocal++;
+        }
+        // Modified locally since last sync: keep it. Dropping the index entry
+        // makes the next push treat it as new (delete loses to edit).
+      }
+      delete this.state.files[change.file_id];
+      return;
+    }
+
     const file = this.app.vault.getAbstractFileByPath(entry.path);
     if (file instanceof TFile) {
       const localHash = await sha256Hex(await this.app.vault.readBinary(file));
@@ -299,6 +492,7 @@ export class SyncEngine {
       // entry makes the push scan treat it as brand new (delete loses to edit).
     }
     delete this.state.files[change.file_id];
+    await this.base.remove(change.file_id);
   }
 
   // ---- push ----------------------------------------------------------------
@@ -346,6 +540,11 @@ export class SyncEngine {
     // Anything indexed but no longer on disk was deleted locally. Excluded
     // paths are skipped — excluding a folder must not delete it remotely.
     for (const [path, [fileId, entry]] of byPath) {
+      // Config entries live outside getFiles(), so they're never in `seen` —
+      // without this guard the vault pass would delete every synced config
+      // file on the server each cycle. Config deletions are handled by
+      // pushConfig() against its own listing.
+      if (this.configStore.owns(path)) continue;
       if (seen.has(path) || isExcluded(path, excludes)) continue;
       try {
         await this.api.commit(this.vaultId(), {
@@ -355,6 +554,7 @@ export class SyncEngine {
           deleted: true,
         });
         delete this.state.files[fileId];
+        await this.base.remove(fileId);
         report.deletedRemote++;
       } catch (e) {
         report.errors.push(`delete ${path}: ${e}`);
@@ -392,6 +592,84 @@ export class SyncEngine {
       path: file.path, version: committed.version,
       localHash, remoteHash: ciphertextHash,
       mtime: file.stat.mtime, size: file.stat.size,
+    });
+    await this.saveBase(fileId, file.path, bytes);
+    report.pushed++;
+  }
+
+  // ---- config push ---------------------------------------------------------
+
+  // Pushes the .obsidian config folder through the adapter. Separate from
+  // push() because config files aren't in getFiles(); its deletion pass is
+  // scoped to config entries so it can't touch vault files (and vice-versa,
+  // guarded in push()).
+  private async pushConfig(report: SyncReport): Promise<void> {
+    const files = await this.configStore.list();
+    const byPath = new Map<string, [string, IndexEntry]>();
+    for (const [id, entry] of Object.entries(this.state.files)) {
+      if (this.configStore.owns(entry.path)) byPath.set(entry.path, [id, entry]);
+    }
+    const seen = new Set<string>(files.map((f) => f.path));
+
+    for (const cf of files) {
+      try {
+        await this.pushConfigFile(cf, byPath.get(cf.path), report);
+      } catch (e) {
+        if (e instanceof ApiError && e.code === "version_conflict") {
+          report.errors.push(`deferred (conflict): ${cf.path}`);
+        } else {
+          report.errors.push(`push ${cf.path}: ${e}`);
+        }
+      }
+    }
+
+    // Config files indexed but no longer on disk were deleted locally.
+    for (const [path, [fileId, entry]] of byPath) {
+      if (seen.has(path)) continue;
+      try {
+        await this.api.commit(this.vaultId(), {
+          file_id: fileId,
+          base_version: entry.version,
+          encrypted_path: await this.codec.encodePath(path),
+          deleted: true,
+        });
+        delete this.state.files[fileId];
+        report.deletedRemote++;
+      } catch (e) {
+        report.errors.push(`delete ${path}: ${e}`);
+      }
+    }
+  }
+
+  private async pushConfigFile(cf: ConfigFile, indexed: [string, IndexEntry] | undefined, report: SyncReport): Promise<void> {
+    if (cf.size > MAX_FILE_SIZE) return;
+    const [fileId, entry] = indexed ?? [crypto.randomUUID(), undefined];
+
+    if (entry && entry.mtime === cf.mtime && entry.size === cf.size) return;
+
+    const bytes = await this.configStore.read(cf.path);
+    const localHash = await sha256Hex(bytes);
+    if (entry && entry.localHash === localHash) {
+      this.updateEntry(fileId, { ...entry, mtime: cf.mtime, size: cf.size });
+      return;
+    }
+
+    const encoded = await this.codec.encodeContent(bytes);
+    const ciphertextHash = await sha256Hex(encoded);
+    const { blob_key, put_url } = await this.api.presignUpload(this.vaultId(), encoded.byteLength);
+    await this.api.putBlob(put_url, encoded);
+    const committed = await this.api.commit(this.vaultId(), {
+      file_id: fileId,
+      base_version: entry?.version ?? 0,
+      encrypted_path: await this.codec.encodePath(cf.path),
+      size: encoded.byteLength,
+      ciphertext_hash: ciphertextHash,
+      blob_key,
+    });
+    this.updateEntry(fileId, {
+      path: cf.path, version: committed.version,
+      localHash, remoteHash: ciphertextHash,
+      mtime: cf.mtime, size: cf.size,
     });
     report.pushed++;
   }

@@ -160,6 +160,117 @@ describe("SyncEngine", () => {
   });
 });
 
+describe("3-way merge on concurrent edits", () => {
+  const BASE = "line one\nline two\nline three\n";
+
+  async function seed() {
+    const { server, a, b } = setup();
+    a.vault.write("Note.md", BASE);
+    await a.engine.sync();
+    await b.engine.sync();
+    return { server, a, b };
+  }
+
+  it("merges non-overlapping edits into one file, no conflict copy", async () => {
+    const { a, b } = await seed();
+    a.vault.write("Note.md", "line one EDITED BY A\nline two\nline three\n");
+    b.vault.write("Note.md", "line one\nline two\nline three EDITED BY B\n");
+    await a.engine.sync();
+
+    const report = await b.engine.sync();
+    expect(report?.merged).toBe(1);
+    expect(report?.conflicts).toBe(0);
+    expect(b.vault.read("Note.md")).toBe("line one EDITED BY A\nline two\nline three EDITED BY B\n");
+    expect(Object.keys(b.vault.snapshot()).some((p) => p.includes("(conflict"))).toBe(false);
+
+    // B pushes the merge; A pulls it — both converge on a single file.
+    await a.engine.sync();
+    expect(a.vault.snapshot()).toEqual(b.vault.snapshot());
+    expect(Object.keys(a.vault.snapshot())).toEqual(["Note.md"]);
+  });
+
+  it("overlapping edits still produce a conflict copy", async () => {
+    const { a, b } = await seed();
+    a.vault.write("Note.md", "line one\nline two FROM A\nline three\n");
+    b.vault.write("Note.md", "line one\nline two FROM B\nline three\n");
+    await a.engine.sync();
+
+    const report = await b.engine.sync();
+    expect(report?.conflicts).toBe(1);
+    expect(report?.merged).toBe(0);
+    expect(b.vault.read("Note.md")).toBe("line one\nline two FROM B\nline three\n");
+    expect(Object.keys(b.vault.snapshot()).some((p) => p.includes("(conflict"))).toBe(true);
+  });
+
+  it("non-text files always fall back to a conflict copy", async () => {
+    const { a, b } = setup();
+    a.vault.write("Image.png", "v1 bytes");
+    await a.engine.sync();
+    await b.engine.sync();
+
+    a.vault.write("Image.png", "v2 from A");
+    b.vault.write("Image.png", "v2 from B");
+    await a.engine.sync();
+
+    const report = await b.engine.sync();
+    expect(report?.conflicts).toBe(1);
+    expect(report?.merged).toBe(0);
+  });
+
+  it("missing base (e.g. first sync after plugin upgrade) falls back to a conflict copy", async () => {
+    const { a, b } = await seed();
+    b.base.map.clear();
+
+    a.vault.write("Note.md", "line one EDITED BY A\nline two\nline three\n");
+    b.vault.write("Note.md", "line one\nline two\nline three EDITED BY B\n");
+    await a.engine.sync();
+
+    const report = await b.engine.sync();
+    expect(report?.conflicts).toBe(1);
+    expect(report?.merged).toBe(0);
+  });
+
+  it("stale base (hash mismatch) falls back to a conflict copy", async () => {
+    const { a, b } = await seed();
+    for (const id of b.base.map.keys()) {
+      b.base.map.set(id, new TextEncoder().encode("corrupted").buffer as ArrayBuffer);
+    }
+
+    a.vault.write("Note.md", "line one EDITED BY A\nline two\nline three\n");
+    b.vault.write("Note.md", "line one\nline two\nline three EDITED BY B\n");
+    await a.engine.sync();
+
+    const report = await b.engine.sync();
+    expect(report?.conflicts).toBe(1);
+    expect(report?.merged).toBe(0);
+  });
+
+  it("shadow base tracks push, pull, and remote delete; skips non-text files", async () => {
+    const { a, b } = setup();
+    a.vault.write("Note.md", "content");
+    a.vault.write("Image.png", "pixels");
+    await a.engine.sync();
+
+    // After push: only the text file is shadowed, with the pushed plaintext.
+    expect(a.base.map.size).toBe(1);
+    const [pushedBase] = [...a.base.map.values()];
+    expect(new TextDecoder().decode(pushedBase)).toBe("content");
+
+    // After pull: same on the other device.
+    await b.engine.sync();
+    expect(b.base.map.size).toBe(1);
+    const [pulledBase] = [...b.base.map.values()];
+    expect(new TextDecoder().decode(pulledBase)).toBe("content");
+
+    // Remote delete clears the base on the pulling device.
+    a.vault.delete("Note.md");
+    await a.engine.sync();
+    expect(a.base.map.size).toBe(0);
+    await b.engine.sync();
+    expect(b.base.map.size).toBe(0);
+  });
+});
+
 describe("exclusions", () => {
   it("excluded folders are not pushed, pulled, or remote-deleted", async () => {
     const { a, b } = setup();
@@ -193,11 +304,162 @@ describe("exclusions", () => {
   });
 });
 
+describe("config sync (.obsidian folder)", () => {
+  it("with the toggle on, pushes config from A and applies it on B via the config store, not the vault", async () => {
+    const { a, b } = setup();
+    a.flags.syncConfig = true;
+    b.flags.syncConfig = true;
+    a.config.put(".obsidian/plugins/calendar/main.js", "console.log('calendar')");
+    a.vault.write("Note.md", "hi"); // a normal note rides along
+
+    await a.engine.sync();
+    const report = await b.engine.sync();
+
+    expect(report?.pulled).toBe(2); // note + config file
+    expect(b.config.readText(".obsidian/plugins/calendar/main.js")).toBe("console.log('calendar')");
+    // The config file must NOT have landed in the vault file tree.
+    expect(b.vault.read(".obsidian/plugins/calendar/main.js")).toBeNull();
+    expect(b.vault.read("Note.md")).toBe("hi");
+  });
+
+  it("with the toggle off, ignores config in both directions but still syncs notes", async () => {
+    const { a, b } = setup();
+    a.flags.syncConfig = true; // A publishes config
+    b.flags.syncConfig = false; // B opts out
+    a.config.put(".obsidian/plugins/calendar/main.js", "v1");
+    a.vault.write("Note.md", "hi");
+    await a.engine.sync();
+
+    const report = await b.engine.sync();
+    expect(report?.pulled).toBe(1); // only the note
+    expect(b.config.readText(".obsidian/plugins/calendar/main.js")).toBeNull();
+    expect(b.vault.read("Note.md")).toBe("hi");
+  });
+
+  it("never uploads the plugin's own folder or the workspace layout", async () => {
+    const { a, server } = setup();
+    a.flags.syncConfig = true;
+    a.config.put(".obsidian/plugins/obsyncian/data.json", '{"apiToken":"SECRET"}');
+    a.config.put(".obsidian/workspace.json", '{"main":"layout"}');
+    a.config.put(".obsidian/plugins/calendar/main.js", "ok");
+
+    await a.engine.sync();
+
+    // Only the calendar plugin got a server entry; secrets and layout stayed local.
+    expect(server.entries.size).toBe(1);
+  });
+
+  it("does not remote-delete config files during an ordinary vault sync (deletion-scope guard)", async () => {
+    const { server, a, b } = setup();
+    a.flags.syncConfig = true;
+    a.config.put(".obsidian/plugins/calendar/main.js", "keep me");
+    a.vault.write("Note.md", "hi");
+    await a.engine.sync();
+
+    // A later sync where the config file is still present must not tombstone it.
+    await a.engine.sync();
+    expect([...server.entries.values()].some((e) => e.deleted)).toBe(false);
+
+    // And a device that pulls sees the config file intact.
+    b.flags.syncConfig = true;
+    await b.engine.sync();
+    expect(b.config.readText(".obsidian/plugins/calendar/main.js")).toBe("keep me");
+  });
+
+  it("propagates a config-file deletion when the toggle is on", async () => {
+    const { a, b } = setup();
+    a.flags.syncConfig = true;
+    b.flags.syncConfig = true;
+    a.config.put(".obsidian/plugins/calendar/main.js", "doomed");
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(b.config.readText(".obsidian/plugins/calendar/main.js")).toBe("doomed");
+
+    a.config.map.delete(".obsidian/plugins/calendar/main.js");
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(b.config.readText(".obsidian/plugins/calendar/main.js")).toBeNull();
+  });
+
+  it("propagates a config-file rename without losing content", async () => {
+    const { a, b } = setup();
+    a.flags.syncConfig = true;
+    b.flags.syncConfig = true;
+    a.config.put(".obsidian/snippets/old.css", "body { color: red; }");
+    await a.engine.sync();
+    await b.engine.sync();
+
+    // Rename on A: same content, new path.
+    const bytes = a.config.map.get(".obsidian/snippets/old.css")!;
+    a.config.map.delete(".obsidian/snippets/old.css");
+    a.config.map.set(".obsidian/snippets/new.css", bytes);
+    await a.engine.sync();
+
+    await b.engine.sync();
+    expect(b.config.readText(".obsidian/snippets/old.css")).toBeNull();
+    expect(b.config.readText(".obsidian/snippets/new.css")).toBe("body { color: red; }");
+  });
+
+  it("concurrent edits to a config JSON produce a conflict copy (no line merge)", async () => {
+    const { a, b } = setup();
+    a.flags.syncConfig = true;
+    b.flags.syncConfig = true;
+    a.config.put(".obsidian/appearance.json", '{"theme":"base"}');
+    await a.engine.sync();
+    await b.engine.sync();
+
+    a.config.put(".obsidian/appearance.json", '{"theme":"from-A"}');
+    b.config.put(".obsidian/appearance.json", '{"theme":"from-B"}');
+    await a.engine.sync();
+
+    const report = await b.engine.sync();
+    expect(report?.conflicts).toBe(1);
+    expect(report?.merged).toBe(0);
+    expect(b.config.readText(".obsidian/appearance.json")).toBe('{"theme":"from-B"}');
+    const copyPath = [...b.config.map.keys()].find((p) => p.includes("(conflict"));
+    expect(copyPath).toBeDefined();
+    expect(b.config.readText(copyPath!)).toBe('{"theme":"from-A"}');
+  });
+});
+
 describe("conflictPath", () => {
   it("inserts the marker before the extension", () => {
     const d = new Date(2026, 6, 2, 11, 30);
     expect(conflictPath("Notes/Idea.md", d)).toBe("Notes/Idea (conflict 2026-07-02 1130).md");
     expect(conflictPath("plain", d)).toBe("plain (conflict 2026-07-02 1130)");
     expect(conflictPath(".hidden", d)).toBe(".hidden (conflict 2026-07-02 1130)");
+  });
+});
+
+describe("forbidden file names", () => {
+  it("skips remote files whose names Obsidian can't write, listing them once without errors", async () => {
+    const { server, a, b } = setup();
+    // Created outside Obsidian (e.g. Finder) on device A — pushes fine.
+    a.vault.write('Plans: world? "domination".md', "muahaha");
+    a.vault.write("Fine Note.md", "ok");
+    await a.engine.sync();
+
+    const report = await b.engine.sync();
+    expect(report?.pulled).toBe(1);
+    expect(b.vault.read("Fine Note.md")).toBe("ok");
+    expect(b.vault.read('Plans: world? "domination".md')).toBeNull();
+    expect(report?.unwritablePaths).toEqual(['Plans: world? "domination".md']);
+    expect(report?.errors).toEqual([]);
+
+    // Next cycle: still skipped, still quiet, no error spam.
+    const again = await b.engine.sync();
+    expect(again?.errors).toEqual([]);
+    expect(again?.unwritablePaths).toEqual([]);
+  });
+
+  it("does not download blobs for unwritable files", async () => {
+    const { server, a, b } = setup();
+    a.vault.write("Bad?.md", "big blob content");
+    await a.engine.sync();
+
+    const before = server.blobDownloads ?? 0;
+    await b.engine.sync();
+    const after = server.blobDownloads ?? 0;
+    expect(after - before).toBe(0);
   });
 });

@@ -41,6 +41,14 @@ export function dirname(path: string): string {
   return slash === -1 ? "" : path.slice(0, slash);
 }
 
+// Obsidian refuses to create files whose names contain these characters
+// (its own API validation, all platforms). Files like that can still exist
+// in a vault — created via Finder/Explorer — and sync UP fine from where
+// they live, but no other device can ever write them.
+export function hasForbiddenNameChars(path: string): boolean {
+  return /[\\:*?"<>|]/.test(path);
+}
+
 function pad(n: number): string {
   return String(n).padStart(2, "0");
 }

@@ -1,5 +1,7 @@
 import { Notice, Platform, Plugin, debounce } from "obsidian";
 import { ApiClient } from "./api";
+import { AdapterBaseStore } from "./basestore";
+import { AdapterConfigStore } from "./configstore";
 import { Codec, PlainCodec } from "./codec";
 import { CryptoCodec, unlock } from "./crypto";
 import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, clampSyncInterval, parseExcludes } from "./settings";
@@ -19,6 +21,8 @@ export default class ObsyncPlugin extends Plugin {
   statusBarEl!: HTMLElement;
   lastReport: SyncReport | null = null;
   lastReportAt: number | null = null;
+  baseStore!: AdapterBaseStore;
+  configStore!: AdapterConfigStore;
   private pendingSync = false;
 
   async onload() {
@@ -28,16 +32,32 @@ export default class ObsyncPlugin extends Plugin {
       () => this.settings.serverUrl,
       () => this.settings.apiToken
     );
+    const configDir = this.app.vault.configDir;
+    const pluginDir = this.manifest.dir ?? `${configDir}/plugins/${this.manifest.id}`;
+    this.baseStore = new AdapterBaseStore(this.app.vault.adapter, `${pluginDir}/base`);
+    // Never sync: the plugin's own folder (its data.json holds THIS device's
+    // apiToken/passphrase, and each device has a distinct token — syncing it
+    // would leak secrets and clobber device identity) and the device-specific
+    // window layout files.
+    const configExcludes = [
+      pluginDir,
+      `${configDir}/workspace.json`,
+      `${configDir}/workspace-mobile.json`,
+    ];
+    this.configStore = new AdapterConfigStore(this.app.vault.adapter, configDir, configExcludes);
     this.engine = new SyncEngine(
       this.app,
       this.api,
       () => this.resolveCodec(),
       () => this.settings.vaultId,
       this.syncState,
+      this.baseStore,
+      this.configStore,
       {
         onStatus: (text) => this.setStatus(text),
         saveState: () => this.savePersisted(),
         excludes: () => parseExcludes(this.settings.excludedFolders),
+        syncConfig: () => this.settings.syncPlugins,
       }
     );
 
@@ -64,6 +84,7 @@ export default class ObsyncPlugin extends Plugin {
     // connect, then works immediately without needing a restart.
     const scheduleSync = debounce(() => void this.syncNow(true), 5_000, true);
     this.app.workspace.onLayoutReady(() => {
+      void this.gcBaseStore();
       void this.syncNow(true);
       this.registerEvent(this.app.vault.on("create", scheduleSync));
       this.registerEvent(this.app.vault.on("modify", scheduleSync));
@@ -128,6 +149,7 @@ export default class ObsyncPlugin extends Plugin {
       }
       if (!quiet && report) {
         new Notice(`Syncian: ↓${report.pulled} ↑${report.pushed}` +
+          (report.merged ? `, ${report.merged} merged` : "") +
           (report.conflicts ? `, ${report.conflicts} conflict(s)` : "") +
           (report.errors.length ? `, ${report.errors.length} error(s) — see console` : ""));
       }
@@ -137,7 +159,7 @@ export default class ObsyncPlugin extends Plugin {
       }
     } catch (e) {
       console.error("[obsync] sync failed:", e);
-      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, errors: [String(e)] };
+      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [String(e)], unwritablePaths: [] };
       this.lastReportAt = Date.now();
       this.reportError("sync failed", String(e));
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
@@ -197,6 +219,21 @@ export default class ObsyncPlugin extends Plugin {
     const leaf = this.app.workspace.getRightLeaf(false);
     await leaf?.setViewState({ type: VIEW_TYPE_OBSYNC, active: true });
     if (leaf) await this.app.workspace.revealLeaf(leaf);
+  }
+
+  // Wipe all shadow bases — must accompany every syncState reset (logout,
+  // unlink, relink): bases are keyed by file_id and a different vault's ids
+  // must never be able to collide with fresh ones.
+  async clearBaseStore() {
+    for (const id of await this.baseStore.list()) await this.baseStore.remove(id);
+  }
+
+  // One-shot at startup: drop bases whose file is no longer in the index
+  // (deleted while the plugin was off, or left behind by an old bug).
+  private async gcBaseStore() {
+    for (const id of await this.baseStore.list()) {
+      if (!this.syncState.files[id]) await this.baseStore.remove(id);
+    }
   }
 
   async loadPersisted() {

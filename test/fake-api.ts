@@ -37,7 +37,10 @@ export class FakeApi {
     this.blobs.set(url, data.slice(0));
   }
 
+  blobDownloads = 0;
+
   async getBlob(url: string): Promise<ArrayBuffer> {
+    this.blobDownloads++;
     const blob = this.blobs.get(url);
     if (!blob) throw new ApiError(404, "blob_get_failed", `no blob at ${url}`);
     return blob.slice(0);

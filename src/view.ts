@@ -103,9 +103,24 @@ export class ObsyncStatusView extends ItemView {
     if (report.pushed) parts.push(`↑ ${report.pushed} uploaded`);
     if (report.deletedLocal) parts.push(`${report.deletedLocal} deleted locally`);
     if (report.deletedRemote) parts.push(`${report.deletedRemote} deleted remotely`);
+    if (report.merged) parts.push(`⇄ ${report.merged} auto-merged`);
     if (report.conflicts) parts.push(`⚠ ${report.conflicts} conflict(s)`);
     if (!parts.length && !report.errors.length) parts.push("everything already in sync");
     for (const part of parts) section.createDiv({ cls: "obsync-report-line", text: part });
+
+    if (report.unwritablePaths.length) {
+      const box = section.createDiv({ cls: "obsync-errors" });
+      box.createDiv({
+        cls: "obsync-errors-title",
+        text: `${report.unwritablePaths.length} file(s) can't sync to this device — names contain characters Obsidian forbids (\\ : * ? " < > |). Rename them on the device where they live:`,
+      });
+      for (const path of report.unwritablePaths.slice(0, 5)) {
+        box.createDiv({ cls: "obsync-error-line", text: path });
+      }
+      if (report.unwritablePaths.length > 5) {
+        box.createDiv({ cls: "obsync-error-line obsync-muted", text: `…and ${report.unwritablePaths.length - 5} more` });
+      }
+    }
 
     if (report.errors.length) {
       const errBox = section.createDiv({ cls: "obsync-errors" });

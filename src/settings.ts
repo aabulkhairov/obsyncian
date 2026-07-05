@@ -17,6 +17,7 @@ export interface ObsyncSettings {
   excludedFolders: string;
   paused: boolean;
   reportErrors: boolean;
+  syncPlugins: boolean;
 }
 
 export const MIN_SYNC_INTERVAL_S = 15;
@@ -40,6 +41,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   excludedFolders: "",
   paused: false,
   reportErrors: true,
+  syncPlugins: false,
 };
 
 export function parseExcludes(excludedFolders: string): string[] {
@@ -97,6 +99,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           s.vaultName = "";
           s.vaultKeyCheck = "";
           Object.assign(this.plugin.syncState, emptySyncState());
+          await this.plugin.clearBaseStore();
           this.plugin.invalidateCodec();
           await this.plugin.saveSettings();
           this.display();
@@ -120,6 +123,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           s.vaultName = "";
           s.vaultKeyCheck = "";
           Object.assign(this.plugin.syncState, emptySyncState());
+          await this.plugin.clearBaseStore();
           this.plugin.invalidateCodec();
           await this.plugin.saveSettings();
           this.display();
@@ -176,6 +180,30 @@ export class ObsyncSettingTab extends PluginSettingTab {
         toggle.setValue(s.reportErrors).onChange(async (value) => {
           s.reportErrors = value;
           await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Synchronize plugins & settings")
+      .setDesc(
+        "Syncs your .obsidian folder (plugins, themes, snippets, settings) across your devices through the same end-to-end encryption. " +
+        "Off by default — desktop-only plugins may not work on mobile, and window layout is not synced. " +
+        "Your Obsyncian login and passphrase are never uploaded. Turn it on across all your devices for best results."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(s.syncPlugins).onChange(async (value) => {
+          s.syncPlugins = value;
+          if (value) {
+            // Backfill: while the toggle was off, config changes from other
+            // devices were skipped but the cursor still advanced past them —
+            // so there'd be nothing above the cursor to pull. Rewind the
+            // cursor so this device re-pulls and applies the config already on
+            // the server. Notes above the cursor are re-seen too, but skip
+            // instantly as self-echo (their versions already match).
+            this.plugin.syncState.cursor = 0;
+          }
+          await this.plugin.saveSettings();
+          if (value) void this.plugin.syncNow(true);
         })
       );
 
@@ -393,6 +421,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           s.vaultName = vaultLabel(vault); // shared vaults show as "@owner — Name" everywhere
           s.vaultKeyCheck = vault.key_check ?? "";
           Object.assign(this.plugin.syncState, emptySyncState());
+          await this.plugin.clearBaseStore();
           this.plugin.invalidateCodec();
           await this.plugin.saveSettings();
           new Notice(`Syncian: linked "${s.vaultName}" — next sync will merge its contents into this vault.`);

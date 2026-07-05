@@ -56,10 +56,13 @@ const REQUEST_TIMEOUT_MS = 10_000;
 // timeout would abort legitimate large transfers on a slow connection.
 const BLOB_TIMEOUT_MS = 120_000;
 
-export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+export function withTimeout<T>(promise: Promise<T>, ms: number, label = ""): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(
-      () => reject(new ApiError(0, "timeout", `No response after ${ms / 1000}s — is the server reachable?`)),
+      // Naming the request is what makes remote timeout reports actionable:
+      // "sync failed after 10s" alone can't distinguish a dead network from
+      // one endpoint being strangled by a local proxy/antivirus.
+      () => reject(new ApiError(0, "timeout", `No response after ${ms / 1000}s${label ? ` (${label})` : ""} — is the server reachable?`)),
       ms
     );
     promise.then(
@@ -127,12 +130,12 @@ export class ApiClient {
   // requestUrl) so large bodies stream properly; the bucket's CORS policy
   // allows Obsidian's origins.
   async putBlob(url: string, data: ArrayBuffer): Promise<void> {
-    const res = await withTimeout(fetch(url, { method: "PUT", body: data }), BLOB_TIMEOUT_MS);
+    const res = await withTimeout(fetch(url, { method: "PUT", body: data }), BLOB_TIMEOUT_MS, "blob upload");
     if (!res.ok) throw new ApiError(res.status, "blob_put_failed", `Blob upload failed: HTTP ${res.status}`);
   }
 
   async getBlob(url: string): Promise<ArrayBuffer> {
-    const res = await withTimeout(fetch(url), BLOB_TIMEOUT_MS);
+    const res = await withTimeout(fetch(url), BLOB_TIMEOUT_MS, "blob download");
     if (!res.ok) throw new ApiError(res.status, "blob_get_failed", `Blob download failed: HTTP ${res.status}`);
     return res.arrayBuffer();
   }
@@ -147,7 +150,8 @@ export class ApiClient {
         headers: auth ? { Authorization: `Bearer ${this.token()}` } : {},
         throw: false,
       }),
-      REQUEST_TIMEOUT_MS
+      REQUEST_TIMEOUT_MS,
+      `${method} ${path.split("?")[0]}`
     );
     if (res.status >= 400) {
       let code = "http_error";
