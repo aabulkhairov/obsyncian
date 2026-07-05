@@ -13,6 +13,13 @@ interface PersistedData {
   syncState: SyncState;
 }
 
+// Backoff for pendingSync's chained re-run when the previous cycle(s) errored
+// — without this, a persistently-failing sync (e.g. a file stuck over a plan
+// limit) re-triggers itself with zero delay, forever. Doubles per
+// consecutive error up to the cap; a single clean cycle resets it.
+const PENDING_BACKOFF_BASE_MS = 2_000;
+const PENDING_BACKOFF_MAX_MS = 60_000;
+
 export default class ObsyncPlugin extends Plugin {
   settings!: ObsyncSettings;
   syncState!: SyncState;
@@ -24,6 +31,10 @@ export default class ObsyncPlugin extends Plugin {
   baseStore!: AdapterBaseStore;
   configStore!: AdapterConfigStore;
   private pendingSync = false;
+  // Consecutive cycles (chained via pendingSync) that ended in error — resets
+  // to 0 on any clean cycle. Drives the backoff below; a healthy chain (new
+  // edits arriving while a sync is in flight) still re-runs instantly.
+  private pendingSyncErrorStreak = 0;
 
   async onload() {
     await this.loadPersisted();
@@ -140,6 +151,10 @@ export default class ObsyncPlugin extends Plugin {
       if (!quiet) new Notice("Syncian: a sync is already running.");
       return;
     }
+    // An explicit "Sync now" is a good moment to retry anything that hit a
+    // permanent plan limit last time — e.g. right after upgrading — without
+    // waiting for the file to change or Obsidian to restart.
+    if (!quiet) this.engine.clearBlocked();
     try {
       this.setStatus("starting…");
       const report = await this.engine.sync();
@@ -147,6 +162,7 @@ export default class ObsyncPlugin extends Plugin {
         this.lastReport = report;
         this.lastReportAt = Date.now();
       }
+      this.pendingSyncErrorStreak = report?.errors.length ? this.pendingSyncErrorStreak + 1 : 0;
       if (!quiet && report) {
         new Notice(`Syncian: ↓${report.pulled} ↑${report.pushed}` +
           (report.merged ? `, ${report.merged} merged` : "") +
@@ -158,6 +174,7 @@ export default class ObsyncPlugin extends Plugin {
         this.reportError("sync", report.errors.slice(0, 5).join("\n"));
       }
     } catch (e) {
+      this.pendingSyncErrorStreak++;
       console.error("[obsync] sync failed:", e);
       this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [String(e)], unwritablePaths: [] };
       this.lastReportAt = Date.now();
@@ -167,7 +184,12 @@ export default class ObsyncPlugin extends Plugin {
       if (this.settings.paused) this.setStatus("paused");
       if (this.pendingSync) {
         this.pendingSync = false;
-        void this.syncNow(true);
+        if (this.pendingSyncErrorStreak > 0) {
+          const delay = Math.min(PENDING_BACKOFF_MAX_MS, PENDING_BACKOFF_BASE_MS * 2 ** (this.pendingSyncErrorStreak - 1));
+          window.setTimeout(() => void this.syncNow(true), delay);
+        } else {
+          void this.syncNow(true);
+        }
       }
     }
   }

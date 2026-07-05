@@ -54,6 +54,10 @@ export function isExcluded(path: string, excludes: string[]): boolean {
 }
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
+// Rejections that will keep failing every cycle until the file itself
+// changes or the owner's plan does — retrying them on an unchanged file is
+// pure waste (and, left unchecked, a self-sustaining hammer on the server).
+const PERMANENT_ERROR_CODES = new Set(["file_too_large", "quota_exceeded"]);
 const DOWNLOAD_BATCH = 100; // matches server MAX_BATCH in downloads_controller.rb
 const DOWNLOAD_CONCURRENCY = 8;
 const PUSH_CONCURRENCY = 6;
@@ -86,6 +90,13 @@ function yieldToRenderer(): Promise<void> {
 export class SyncEngine {
   private running = false;
   private codec!: Codec;
+  // Paths that just hit a permanent per-file limit, keyed to the exact
+  // size+mtime that failed — deliberately in-memory only (not persisted):
+  // it resets on plugin reload/Obsidian restart, which is enough of a
+  // periodic retry to notice a plan upgrade without re-hammering the
+  // server every cycle in between. clearBlocked() forces an earlier retry
+  // (e.g. right after the user upgrades) without waiting for a restart.
+  private blocked = new Map<string, { size: number; mtime: number }>();
 
   constructor(
     private app: App,
@@ -102,6 +113,14 @@ export class SyncEngine {
 
   get busy(): boolean {
     return this.running;
+  }
+
+  // Forces the next cycle to retry every permanently-blocked file, even if
+  // it hasn't changed — used when the user explicitly asks to sync (e.g.
+  // right after upgrading their plan), so they don't have to edit the file
+  // or restart Obsidian just to prove the limit is gone.
+  clearBlocked(): void {
+    this.blocked.clear();
   }
 
   async sync(): Promise<SyncReport | null> {
@@ -505,6 +524,12 @@ export class SyncEngine {
     const localFiles = this.app.vault.getFiles().filter((f) => !isExcluded(f.path, excludes));
     const seen = new Set<string>(localFiles.map((f) => f.path));
 
+    // Drop stale entries for files that no longer exist — otherwise a
+    // renamed/deleted file's block never clears.
+    for (const path of this.blocked.keys()) {
+      if (!seen.has(path)) this.blocked.delete(path);
+    }
+
     // Each pushFile does its own presign+PUT+commit round trip — the API has
     // no batch-upload endpoint (unlike downloads), but commits are already
     // serialized per vault server-side (CommitFileChange locks the vault
@@ -521,6 +546,11 @@ export class SyncEngine {
           if (e instanceof ApiError && e.code === "version_conflict") {
             // Another device won the race; next sync cycle pulls then re-pushes.
             report.errors.push(`deferred (conflict): ${file.path}`);
+          } else if (e instanceof ApiError && PERMANENT_ERROR_CODES.has(e.code)) {
+            // Won't succeed again until the file or the plan changes — stop
+            // retrying it every cycle.
+            this.blocked.set(file.path, { size: file.stat.size, mtime: file.stat.mtime });
+            report.errors.push(`skipped (${e.code}): ${file.path} — will retry once the file changes or you upgrade`);
           } else {
             report.errors.push(`push ${file.path}: ${e}`);
           }
@@ -564,6 +594,8 @@ export class SyncEngine {
 
   private async pushFile(file: TFile, indexed: [string, IndexEntry] | undefined, report: SyncReport): Promise<void> {
     if (file.stat.size > MAX_FILE_SIZE) return;
+    const block = this.blocked.get(file.path);
+    if (block && block.size === file.stat.size && block.mtime === file.stat.mtime) return;
     const [fileId, entry] = indexed ?? [crypto.randomUUID(), undefined];
 
     if (entry && entry.mtime === file.stat.mtime && entry.size === file.stat.size) return;
@@ -610,6 +642,9 @@ export class SyncEngine {
       if (this.configStore.owns(entry.path)) byPath.set(entry.path, [id, entry]);
     }
     const seen = new Set<string>(files.map((f) => f.path));
+    for (const path of this.blocked.keys()) {
+      if (this.configStore.owns(path) && !seen.has(path)) this.blocked.delete(path);
+    }
 
     for (const cf of files) {
       try {
@@ -617,6 +652,9 @@ export class SyncEngine {
       } catch (e) {
         if (e instanceof ApiError && e.code === "version_conflict") {
           report.errors.push(`deferred (conflict): ${cf.path}`);
+        } else if (e instanceof ApiError && PERMANENT_ERROR_CODES.has(e.code)) {
+          this.blocked.set(cf.path, { size: cf.size, mtime: cf.mtime });
+          report.errors.push(`skipped (${e.code}): ${cf.path} — will retry once the file changes or you upgrade`);
         } else {
           report.errors.push(`push ${cf.path}: ${e}`);
         }
@@ -643,6 +681,8 @@ export class SyncEngine {
 
   private async pushConfigFile(cf: ConfigFile, indexed: [string, IndexEntry] | undefined, report: SyncReport): Promise<void> {
     if (cf.size > MAX_FILE_SIZE) return;
+    const block = this.blocked.get(cf.path);
+    if (block && block.size === cf.size && block.mtime === cf.mtime) return;
     const [fileId, entry] = indexed ?? [crypto.randomUUID(), undefined];
 
     if (entry && entry.mtime === cf.mtime && entry.size === cf.size) return;

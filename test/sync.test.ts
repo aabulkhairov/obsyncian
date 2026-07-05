@@ -148,6 +148,35 @@ describe("SyncEngine", () => {
     expect(report?.pushed).toBe(0);
   });
 
+  it("stops retrying a file that hit a permanent plan limit, until it changes or clearBlocked() is called", async () => {
+    const server = new FakeApi();
+    server.maxUploadSize = 10;
+    const { vault, engine } = makeClient(server);
+
+    vault.write("Big.md", "x".repeat(20));
+    const first = await engine.sync();
+    expect(server.uploadAttempts).toBe(1);
+    expect(first?.errors[0]).toContain("skipped (file_too_large)");
+
+    // Unchanged file: further cycles must not hit the network again.
+    await engine.sync();
+    await engine.sync();
+    expect(server.uploadAttempts).toBe(1);
+
+    // Explicit retry (e.g. right after upgrading) tries again exactly once.
+    engine.clearBlocked();
+    const retried = await engine.sync();
+    expect(server.uploadAttempts).toBe(2);
+    expect(retried?.errors[0]).toContain("skipped (file_too_large)");
+
+    // The file itself changing (now under the limit) also unblocks it.
+    vault.write("Big.md", "small");
+    const fixed = await engine.sync();
+    expect(server.uploadAttempts).toBe(3);
+    expect(fixed?.errors.length).toBe(0);
+    expect(fixed?.pushed).toBe(1);
+  });
+
   it("mtime churn without content change does not re-upload", async () => {
     const { a, server } = setup();
     a.vault.write("Note.md", "same");

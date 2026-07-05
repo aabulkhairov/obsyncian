@@ -19,6 +19,9 @@ export class FakeApi {
   blobs = new Map<string, ArrayBuffer>();
   latestRevision = 0;
   private blobCounter = 0;
+  // Test hook: simulates the server's per-file plan-limit rejection.
+  maxUploadSize: number | null = null;
+  uploadAttempts = 0;
 
   async changes(_vaultId: string, since: number): Promise<ChangesPage> {
     const changes = [...this.entries.values()]
@@ -28,7 +31,11 @@ export class FakeApi {
     return { latest_revision: this.latestRevision, changes, has_more: false };
   }
 
-  async presignUpload(_vaultId: string, _size: number): Promise<{ blob_key: string; put_url: string }> {
+  async presignUpload(_vaultId: string, size: number): Promise<{ blob_key: string; put_url: string }> {
+    this.uploadAttempts++;
+    if (this.maxUploadSize !== null && size > this.maxUploadSize) {
+      throw new ApiError(422, "file_too_large", "File exceeds the limit of the vault owner's plan.");
+    }
     const key = `blob-${++this.blobCounter}`;
     return { blob_key: key, put_url: key };
   }
