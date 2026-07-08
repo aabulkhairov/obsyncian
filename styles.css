@@ -116,3 +116,84 @@
   word-break: break-all;
   padding: var(--size-2-1) 0;
 }
+
+/* ---- What's new modal ---------------------------------------------- */
+
+.obsync-whatsnew-modal {
+  max-width: 560px;
+}
+
+.obsync-whatsnew-title-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: var(--size-4-2);
+  border-radius: var(--radius-s);
+  background: linear-gradient(135deg, #a855f7, #7c3aed);
+  color: #fff;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.obsync-whatsnew-title-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.obsync-whatsnew-subtitle {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  margin: 0 0 var(--size-4-3) 0;
+}
+
+.obsync-whatsnew-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin: 0 0 var(--size-4-3) 0;
+}
+
+.obsync-whatsnew-divider {
+  border: none;
+  border-top: 1px solid var(--background-modifier-border);
+  margin: var(--size-4-3) 0;
+}
+
+.obsync-whatsnew-pill {
+  display: inline-block;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-on-accent);
+  background: linear-gradient(135deg, #a855f7, #7c3aed);
+  padding: 2px var(--size-4-2);
+  border-radius: var(--radius-l);
+  margin-bottom: var(--size-4-2);
+}
+
+.obsync-whatsnew-notes h3 {
+  font-size: var(--font-ui-medium);
+  margin: var(--size-4-3) 0 var(--size-2-1) 0;
+}
+
+.obsync-whatsnew-notes > div:first-child h3:first-child {
+  margin-top: 0;
+}
+
+.obsync-whatsnew-notes p {
+  color: var(--text-normal);
+  line-height: var(--line-height-normal);
+  margin: 0 0 var(--size-4-2) 0;
+}
+
+.obsync-whatsnew-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-3);
+}
+
+.obsync-whatsnew-footer-hint {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}

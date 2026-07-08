@@ -7,10 +7,14 @@ import { CryptoCodec, unlock } from "./crypto";
 import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, clampSyncInterval, parseExcludes } from "./settings";
 import { SyncEngine, SyncReport, SyncState, emptySyncState } from "./sync";
 import { ObsyncStatusView, VIEW_TYPE_OBSYNC } from "./view";
+import { WhatsNewModal, compareVersions, notesFor, notesSince } from "./whatsnew";
 
 interface PersistedData {
   settings: ObsyncSettings;
   syncState: SyncState;
+  // Manifest version the release-notes popup was last shown for. Undefined
+  // until the first run that carries this feature — see maybeShowWhatsNew.
+  lastNotesVersion?: string;
 }
 
 // Backoff for pendingSync's chained re-run when the previous cycle(s) errored
@@ -30,6 +34,7 @@ export default class ObsyncPlugin extends Plugin {
   lastReportAt: number | null = null;
   baseStore!: AdapterBaseStore;
   configStore!: AdapterConfigStore;
+  private lastNotesVersion?: string;
   private pendingSync = false;
   // Consecutive cycles (chained via pendingSync) that ended in error — resets
   // to 0 on any clean cycle. Drives the backoff below; a healthy chain (new
@@ -83,6 +88,7 @@ export default class ObsyncPlugin extends Plugin {
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
     this.addCommand({ id: "toggle-pause", name: "Pause/resume sync", callback: () => this.togglePause() });
+    this.addCommand({ id: "whats-new", name: "What's new", callback: () => new WhatsNewModal(this, notesFor(this.manifest.version)).open() });
 
     // onLayoutReady fires exactly once per Obsidian session — it used to bail
     // out here if not yet connected, which meant a device that installs the
@@ -95,6 +101,7 @@ export default class ObsyncPlugin extends Plugin {
     // connect, then works immediately without needing a restart.
     const scheduleSync = debounce(() => void this.syncNow(true), 5_000, true);
     this.app.workspace.onLayoutReady(() => {
+      void this.maybeShowWhatsNew();
       void this.gcBaseStore();
       void this.syncNow(true);
       this.registerEvent(this.app.vault.on("create", scheduleSync));
@@ -258,9 +265,26 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
+  // Show the release-notes popup once per upgrade. On the very first run that
+  // carries this feature `lastNotesVersion` is undefined — we set the baseline
+  // silently so existing users don't get a retroactive popup for changes
+  // they've already been using; the popup only fires on the *next* upgrade.
+  private async maybeShowWhatsNew() {
+    const current = this.manifest.version;
+    if (this.lastNotesVersion && this.settings.showReleaseNotes && compareVersions(current, this.lastNotesVersion) > 0) {
+      const entries = notesSince(this.lastNotesVersion, current);
+      if (entries.length) new WhatsNewModal(this, entries).open();
+    }
+    if (this.lastNotesVersion !== current) {
+      this.lastNotesVersion = current;
+      await this.savePersisted();
+    }
+  }
+
   async loadPersisted() {
     const data = (await this.loadData()) as Partial<PersistedData> | null;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data?.settings);
+    this.lastNotesVersion = data?.lastNotesVersion;
     // Older builds stored the interval in minutes; carry the value over once.
     const stored = data?.settings as { syncIntervalMinutes?: number; syncIntervalSeconds?: number } | undefined;
     if (stored?.syncIntervalMinutes && !stored.syncIntervalSeconds) {
@@ -270,7 +294,7 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   async savePersisted() {
-    await this.saveData({ settings: this.settings, syncState: this.syncState } satisfies PersistedData);
+    await this.saveData({ settings: this.settings, syncState: this.syncState, lastNotesVersion: this.lastNotesVersion } satisfies PersistedData);
   }
 
   // Kept for settings-tab convenience.

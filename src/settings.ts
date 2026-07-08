@@ -18,6 +18,7 @@ export interface ObsyncSettings {
   paused: boolean;
   reportErrors: boolean;
   syncPlugins: boolean;
+  showReleaseNotes: boolean;
 }
 
 export const MIN_SYNC_INTERVAL_S = 15;
@@ -42,6 +43,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   paused: false,
   reportErrors: true,
   syncPlugins: false,
+  showReleaseNotes: true,
 };
 
 export function parseExcludes(excludedFolders: string): string[] {
@@ -179,6 +181,16 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(s.reportErrors).onChange(async (value) => {
           s.reportErrors = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show release notes after updates")
+      .setDesc("Pop up a short summary of what changed after Syncian updates. You can always reopen it with the “Syncian: What's new” command.")
+      .addToggle((toggle) =>
+        toggle.setValue(s.showReleaseNotes).onChange(async (value) => {
+          s.showReleaseNotes = value;
           await this.plugin.saveSettings();
         })
       );
