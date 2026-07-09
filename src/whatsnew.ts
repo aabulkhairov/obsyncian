@@ -1,4 +1,4 @@
-import { MarkdownRenderer, Modal, Plugin, setIcon } from "obsidian";
+import { Component, MarkdownRenderer, Modal, Plugin, setIcon } from "obsidian";
 
 export interface ReleaseNote {
   version: string;
@@ -54,7 +54,15 @@ export class WhatsNewModal extends Modal {
     super(plugin.app);
   }
 
+  // MarkdownRenderer.render needs a Component to scope the lifecycle of
+  // whatever it registers (internal-link hover previews, embeds, etc.) —
+  // passing the plugin itself would tie those to the whole Obsidian session
+  // instead of this modal, leaking them on every open. This one lives and
+  // dies with the modal.
+  private renderScope = new Component();
+
   onOpen(): void {
+    this.renderScope.load();
     const { contentEl, titleEl, modalEl } = this;
     modalEl.addClass("obsync-whatsnew-modal");
 
@@ -78,7 +86,7 @@ export class WhatsNewModal extends Modal {
       // Only label versions when several are shown at once (e.g. a user who
       // skipped a couple of releases) — otherwise the title already says it.
       if (this.entries.length > 1) section.createDiv({ cls: "obsync-whatsnew-pill", text: entry.version });
-      void MarkdownRenderer.render(this.app, entry.notes, section, "", this.plugin);
+      void MarkdownRenderer.render(this.app, entry.notes, section, "", this.renderScope);
     }
 
     contentEl.createEl("hr", { cls: "obsync-whatsnew-divider" });
@@ -88,6 +96,7 @@ export class WhatsNewModal extends Modal {
   }
 
   onClose(): void {
+    this.renderScope.unload();
     this.titleEl.empty();
     this.contentEl.empty();
   }
