@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMergeablePath, merge3, tryDecodeUtf8 } from "../src/merge";
+import { isMergeablePath, merge3, merge3Markers, tryDecodeUtf8 } from "../src/merge";
 
 describe("merge3", () => {
   it("merges edits to different lines", () => {
@@ -33,6 +33,31 @@ describe("merge3", () => {
 
   it("deleting a line adjacent to the other side's edit is a conflict", () => {
     expect(merge3("a\nb\nc", "a\nc", "a\nb\nC")).toBeNull();
+  });
+});
+
+describe("merge3Markers", () => {
+  it("merges disjoint edits cleanly with no markers", () => {
+    const r = merge3Markers("a\nb\nc", "A\nb\nc", "a\nb\nC");
+    expect(r.conflict).toBe(false);
+    expect(r.text).toBe("A\nb\nC");
+  });
+
+  it("collapses identical concurrent edits (false conflict) with no markers", () => {
+    const r = merge3Markers("a\nb", "a\nB", "a\nB");
+    expect(r.conflict).toBe(false);
+    expect(r.text).toBe("a\nB");
+  });
+
+  it("preserves overlapping edits inline with git-style markers", () => {
+    const r = merge3Markers("a\nb\nc", "a\nLOCAL\nc", "a\nREMOTE\nc");
+    expect(r.conflict).toBe(true);
+    expect(r.text).toContain("<<<<<<< This device");
+    expect(r.text).toContain("LOCAL");
+    expect(r.text).toContain("=======");
+    expect(r.text).toContain("REMOTE");
+    expect(r.text).toContain(">>>>>>> Other device (synced)");
+    // Nothing is lost — both sides are present.
   });
 });
 

@@ -5,7 +5,7 @@ import { ApiClient } from "../src/api";
 import { BaseStore } from "../src/basestore";
 import { ConfigFile, ConfigStore } from "../src/configstore";
 import { Codec, PlainCodec } from "../src/codec";
-import { SyncEngine, emptySyncState } from "../src/sync";
+import { SyncEngine, emptySyncState, type ConflictMode } from "../src/sync";
 
 export class MemoryBaseStore implements BaseStore {
   map = new Map<string, ArrayBuffer>();
@@ -74,7 +74,7 @@ export function makeClient(
     ".obsidian/plugins/obsyncian",
     ".obsidian/workspace.json",
   ]);
-  const flags = { syncConfig: false };
+  const flags = { syncConfig: false, conflictMode: "merge" as ConflictMode };
   const engine = new SyncEngine(
     app as unknown as App,
     server as unknown as ApiClient,
@@ -88,6 +88,7 @@ export function makeClient(
       saveState: async () => {},
       excludes: () => excluded,
       syncConfig: () => flags.syncConfig,
+      conflictMode: () => flags.conflictMode,
     }
   );
   return { app, vault: app.vault, engine, excluded, base, config, flags };

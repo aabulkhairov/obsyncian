@@ -2,7 +2,7 @@ import { App, Modal, Notice, Platform, PluginSettingTab, Setting } from "obsidia
 import { vaultLabel } from "./api";
 import { makeKeyCheck, unlock } from "./crypto";
 import type ObsyncPlugin from "./main";
-import { emptySyncState } from "./sync";
+import { emptySyncState, type ConflictMode } from "./sync";
 
 export interface ObsyncSettings {
   serverUrl: string;
@@ -15,6 +15,7 @@ export interface ObsyncSettings {
   passphrase: string;
   syncIntervalSeconds: number;
   excludedFolders: string;
+  conflictResolution: ConflictMode;
   paused: boolean;
   reportErrors: boolean;
   syncPlugins: boolean;
@@ -40,6 +41,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   passphrase: "",
   syncIntervalSeconds: 300,
   excludedFolders: "",
+  conflictResolution: "merge",
   paused: false,
   reportErrors: true,
   syncPlugins: false,
@@ -173,6 +175,20 @@ export class ObsyncSettingTab extends PluginSettingTab {
           s.excludedFolders = value;
           await this.plugin.saveSettings();
         })
+      );
+
+    new Setting(containerEl)
+      .setName("Conflict resolution")
+      .setDesc("Choose how conflicts are resolved when a note is independently modified on multiple devices.")
+      .addDropdown((dd) =>
+        dd
+          .addOption("merge", "Automatically merge")
+          .addOption("conflictFile", "Create conflict file")
+          .setValue(s.conflictResolution)
+          .onChange(async (value) => {
+            s.conflictResolution = value as ConflictMode;
+            await this.plugin.saveSettings();
+          })
       );
 
     new Setting(containerEl)

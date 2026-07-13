@@ -74,6 +74,7 @@ export default class ObsyncPlugin extends Plugin {
         saveState: () => this.savePersisted(),
         excludes: () => parseExcludes(this.settings.excludedFolders),
         syncConfig: () => this.settings.syncPlugins,
+        conflictMode: () => this.settings.conflictResolution,
       }
     );
 

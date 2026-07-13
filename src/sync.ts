@@ -3,7 +3,7 @@ import { ApiClient, ApiError, ChangeRecord } from "./api";
 import { BaseStore } from "./basestore";
 import { ConfigFile, ConfigStore } from "./configstore";
 import { Codec } from "./codec";
-import { isMergeablePath, merge3, tryDecodeUtf8 } from "./merge";
+import { isMergeablePath, merge3Markers, tryDecodeUtf8 } from "./merge";
 import { conflictPath, dirname, hasForbiddenNameChars, sha256Hex } from "./util";
 
 export interface IndexEntry {
@@ -39,11 +39,17 @@ export interface SyncReport {
   unwritablePaths: string[];
 }
 
+// How overlapping edits (same lines changed on two devices) are resolved:
+// "merge" keeps a single file with inline conflict markers; "conflictFile"
+// keeps the local file and parks the remote version in a "(conflict …)" copy.
+export type ConflictMode = "merge" | "conflictFile";
+
 interface SyncCallbacks {
   onStatus(text: string): void;
   saveState(): Promise<void>;
   excludes(): string[]; // folder prefixes to skip, e.g. ["Private", "Attachments/Huge"]
   syncConfig(): boolean; // sync the .obsidian config folder (plugins/themes/settings)?
+  conflictMode(): ConflictMode; // how to resolve overlapping concurrent edits
 }
 
 export function isExcluded(path: string, excludes: string[]): boolean {
@@ -321,15 +327,16 @@ export class SyncEngine {
 
       const locallyModified = !entry || entry.localHash !== localHash || entry.path !== path;
       if (locallyModified) {
-        // Both sides changed. For text files, try a line-based 3-way merge
-        // against the shadow base (the last plaintext both sides agreed on);
-        // if local and remote touched disjoint lines the result replaces the
-        // local file and gets pushed as the next version — no conflict copy.
+        // Both sides changed. For text files, do a line-based 3-way merge
+        // against the shadow base (the last plaintext both sides agreed on).
+        // Disjoint edits merge cleanly. Overlapping edits either merge inline
+        // with conflict markers ("Automatically merge") or fall through to a
+        // conflict copy ("Create conflict file") — chosen in settings.
         const merged = entry && isMergeablePath(path)
           ? await this.tryMerge(change.file_id, entry, localBytes, plaintext)
           : null;
-        if (merged !== null) {
-          await this.writeLocal(path, merged);
+        if (merged && (!merged.conflict || this.cb.conflictMode() === "merge")) {
+          await this.writeLocal(path, merged.bytes);
           this.updateEntry(change.file_id, {
             path, version: change.version,
             localHash: remotePlainHash, // remote is the new synced base…
@@ -338,13 +345,17 @@ export class SyncEngine {
           });
           await this.base.write(change.file_id, plaintext);
           report.merged++;
-          new Notice(`Syncian: auto-merged concurrent edits in ${path}.`);
+          new Notice(
+            merged.conflict
+              ? `Syncian: merged concurrent edits in ${path} — review the conflict markers (search “<<<<<<<”).`
+              : `Syncian: auto-merged concurrent edits in ${path}.`
+          );
           return;
         }
 
-        // Overlapping edits or unmergeable content: keep the local file (it
-        // will be pushed as the next version), park the remote version in a
-        // conflict copy.
+        // "Create conflict file" mode with overlapping edits, or unmergeable
+        // content: keep the local file (it will be pushed as the next
+        // version), park the remote version in a conflict copy.
         const copy = normalizePath(conflictPath(path));
         await this.app.vault.createBinary(copy, plaintext);
         this.updateEntry(change.file_id, {
@@ -459,24 +470,25 @@ export class SyncEngine {
     }
   }
 
-  // Returns the merged bytes, or null when a clean merge isn't possible —
-  // base missing/stale (crash, plugin upgrade), non-UTF-8 content, or local
-  // and remote edits overlapping on the same lines.
+  // Returns the merged bytes plus whether inline conflict markers were needed,
+  // or null when merging is impossible at all — base missing/stale (crash,
+  // plugin upgrade) or non-UTF-8 content. Overlapping edits are NOT null: they
+  // merge with markers, and the caller decides (per the conflict-resolution
+  // setting) whether to keep that or fall back to a conflict copy.
   private async tryMerge(
     fileId: string,
     entry: IndexEntry,
     localBytes: ArrayBuffer,
     remoteBytes: ArrayBuffer
-  ): Promise<ArrayBuffer | null> {
+  ): Promise<{ bytes: ArrayBuffer; conflict: boolean } | null> {
     const baseBytes = await this.base.read(fileId);
     if (!baseBytes || (await sha256Hex(baseBytes)) !== entry.localHash) return null;
     const base = tryDecodeUtf8(baseBytes);
     const local = tryDecodeUtf8(localBytes);
     const remote = tryDecodeUtf8(remoteBytes);
     if (base === null || local === null || remote === null) return null;
-    const merged = merge3(base, local, remote);
-    if (merged === null) return null;
-    return new TextEncoder().encode(merged).buffer as ArrayBuffer;
+    const { text, conflict } = merge3Markers(base, local, remote);
+    return { bytes: new TextEncoder().encode(text).buffer as ArrayBuffer, conflict };
   }
 
   private async applyRemoteDelete(change: ChangeRecord, entry: IndexEntry | undefined, report: SyncReport): Promise<void> {

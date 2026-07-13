@@ -1,4 +1,4 @@
-import { diff3Merge } from "node-diff3";
+import { diff3Merge, merge as diff3TwoWay } from "node-diff3";
 
 // Only formats where a line-based merge is meaningful. Notably NOT .canvas:
 // it's JSON, and a line merge can produce syntactically broken output.
@@ -34,4 +34,26 @@ export function merge3(base: string, local: string, remote: string): string | nu
     lines.push(...region.ok);
   }
   return lines.join("\n");
+}
+
+// Labels shown in the git-style conflict markers when "Automatically merge"
+// has to preserve overlapping edits inline.
+export const MERGE_LABEL_LOCAL = "This device";
+export const MERGE_LABEL_REMOTE = "Other device (synced)";
+
+// Three-way merge that ALWAYS returns text — nothing is ever lost. Disjoint
+// edits merge cleanly (identical concurrent edits collapse via
+// excludeFalseConflicts); overlapping edits are preserved inline with
+// git-style <<<<<<< / ======= / >>>>>>> markers. `conflict` reports whether
+// any markers were inserted, so the caller can flag the file for review.
+export function merge3Markers(
+  base: string,
+  local: string,
+  remote: string
+): { text: string; conflict: boolean } {
+  const { conflict, result } = diff3TwoWay(local.split("\n"), base.split("\n"), remote.split("\n"), {
+    excludeFalseConflicts: true,
+    label: { a: MERGE_LABEL_LOCAL, b: MERGE_LABEL_REMOTE },
+  });
+  return { text: result.join("\n"), conflict };
 }

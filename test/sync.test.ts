@@ -66,6 +66,8 @@ describe("SyncEngine", () => {
 
   it("concurrent edits produce a conflict copy and both versions survive", async () => {
     const { a, b } = setup();
+    a.flags.conflictMode = "conflictFile";
+    b.flags.conflictMode = "conflictFile";
     a.vault.write("Note.md", "base");
     await a.engine.sync();
     await b.engine.sync();
@@ -107,6 +109,8 @@ describe("SyncEngine", () => {
 
   it("stale push is deferred on version conflict, then converges", async () => {
     const { a, b } = setup();
+    a.flags.conflictMode = "conflictFile";
+    b.flags.conflictMode = "conflictFile";
     a.vault.write("Note.md", "base");
     await a.engine.sync();
     await b.engine.sync();
@@ -218,8 +222,33 @@ describe("3-way merge on concurrent edits", () => {
     expect(Object.keys(a.vault.snapshot())).toEqual(["Note.md"]);
   });
 
-  it("overlapping edits still produce a conflict copy", async () => {
+  it("overlapping edits merge inline with conflict markers by default (Automatically merge)", async () => {
     const { a, b } = await seed();
+    a.vault.write("Note.md", "line one\nline two FROM A\nline three\n");
+    b.vault.write("Note.md", "line one\nline two FROM B\nline three\n");
+    await a.engine.sync();
+
+    const report = await b.engine.sync();
+    expect(report?.merged).toBe(1);
+    expect(report?.conflicts).toBe(0);
+    // One file — both versions preserved inline, nothing lost, no second copy.
+    expect(Object.keys(b.vault.snapshot()).some((p) => p.includes("(conflict"))).toBe(false);
+    const merged = b.vault.read("Note.md")!;
+    expect(merged).toContain("<<<<<<< This device");
+    expect(merged).toContain("line two FROM B");
+    expect(merged).toContain("line two FROM A");
+    expect(merged).toContain(">>>>>>> Other device (synced)");
+
+    // B pushes the marker file; A pulls it — both converge on one note.
+    await a.engine.sync();
+    expect(a.vault.snapshot()).toEqual(b.vault.snapshot());
+    expect(Object.keys(a.vault.snapshot())).toEqual(["Note.md"]);
+  });
+
+  it("overlapping edits produce a conflict copy in Create-conflict-file mode", async () => {
+    const { a, b } = await seed();
+    a.flags.conflictMode = "conflictFile";
+    b.flags.conflictMode = "conflictFile";
     a.vault.write("Note.md", "line one\nline two FROM A\nline three\n");
     b.vault.write("Note.md", "line one\nline two FROM B\nline three\n");
     await a.engine.sync();
