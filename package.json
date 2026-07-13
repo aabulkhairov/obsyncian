@@ -1,6 +1,6 @@
 {
   "name": "obsync",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "Affordable end-to-end encrypted vault sync for Obsidian",
   "main": "main.js",
   "scripts": {
