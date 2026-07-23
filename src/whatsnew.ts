@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.16",
+    notes: [
+      "### 🚫 Out of storage? Sync now pauses cleanly",
+      "When your vault runs out of storage, Syncian pauses auto-sync instead of silently retrying every file, every cycle. You'll get a clear heads-up (and a message from the bot on how to add space). Once you've freed up room or upgraded, just press **Sync now** to pick up where you left off.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.13",
     notes: [
       "### 🔀 Auto-merge for concurrent edits",

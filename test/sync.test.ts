@@ -181,6 +181,28 @@ describe("SyncEngine", () => {
     expect(fixed?.pushed).toBe(1);
   });
 
+  it("halts the whole push and flags quotaBlocked when the vault is out of storage", async () => {
+    const server = new FakeApi();
+    const { vault, engine } = makeClient(server);
+    vault.write("A.md", "hello");
+    vault.write("B.md", "world");
+
+    server.quotaExceeded = true;
+    const report = await engine.sync();
+    expect(report?.quotaBlocked).toBe(true);
+    // Account-level billing state, not a bug — never recorded as an error, so
+    // it never reaches the error-report channel.
+    expect(report?.errors).toEqual([]);
+    expect(report?.pushed).toBe(0);
+
+    // After the user frees space / upgrades, a re-sync uploads normally — the
+    // quota block leaves nothing sticky on the engine (no `blocked` entries).
+    server.quotaExceeded = false;
+    const fixed = await engine.sync();
+    expect(fixed?.quotaBlocked).toBe(false);
+    expect(fixed?.pushed).toBe(2);
+  });
+
   it("mtime churn without content change does not re-upload", async () => {
     const { a, server } = setup();
     a.vault.write("Note.md", "same");

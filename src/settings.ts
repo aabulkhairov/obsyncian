@@ -17,6 +17,12 @@ export interface ObsyncSettings {
   excludedFolders: string;
   conflictResolution: ConflictMode;
   paused: boolean;
+  // Set automatically when the server rejects a push for quota_exceeded — the
+  // vault owner is out of storage, so auto-sync is held (like `paused`) until
+  // the user frees space / upgrades and presses "Sync now". Distinct from
+  // `paused` so we can show a billing-specific message and never conflate it
+  // with a deliberate user pause. Cleared by any manual sync.
+  quotaBlocked: boolean;
   reportErrors: boolean;
   syncPlugins: boolean;
   showReleaseNotes: boolean;
@@ -43,6 +49,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   excludedFolders: "",
   conflictResolution: "merge",
   paused: false,
+  quotaBlocked: false,
   reportErrors: true,
   syncPlugins: false,
   showReleaseNotes: true,

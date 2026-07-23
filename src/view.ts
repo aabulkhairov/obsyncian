@@ -55,14 +55,30 @@ export class ObsyncStatusView extends ItemView {
     const ss = this.plugin.syncState;
     const busy = this.plugin.engine.busy;
     const paused = s.paused;
+    const quotaBlocked = s.quotaBlocked && !paused;
     const fileCount = Object.keys(ss.files).length;
     const totalBytes = Object.values(ss.files).reduce((sum, f) => sum + (f.size > 0 ? f.size : 0), 0);
 
     // Status line: what the engine is doing right now.
     const statusLine = el.createDiv({ cls: "obsync-status-line" });
     const dot = statusLine.createSpan({ cls: "obsync-status-dot" });
-    dot.addClass(busy ? "is-busy" : paused ? "is-paused" : "is-idle");
-    statusLine.createSpan({ text: paused && !busy ? "paused — auto-sync off" : this.statusText });
+    dot.addClass(busy ? "is-busy" : (paused || quotaBlocked) ? "is-paused" : "is-idle");
+    statusLine.createSpan({
+      text: !busy && quotaBlocked ? "storage full — auto-sync off"
+        : paused && !busy ? "paused — auto-sync off"
+        : this.statusText,
+    });
+
+    // Out of storage: auto-sync is held until the owner frees space / upgrades.
+    // Spell out the resume path — the "Sync now" button below is the resume.
+    if (quotaBlocked && !busy) {
+      const banner = el.createDiv({ cls: "obsync-errors" });
+      banner.createDiv({ cls: "obsync-errors-title", text: "Storage full — sync paused" });
+      banner.createDiv({
+        cls: "obsync-error-line",
+        text: "Your vault is out of storage, so changes aren't uploading. Free up space or upgrade your plan, then press “Sync now” to resume.",
+      });
+    }
 
     const stats = el.createDiv({ cls: "obsync-stats" });
     addRow(stats, "Vault", s.vaultName || "—");

@@ -148,7 +148,10 @@ export default class ObsyncPlugin extends Plugin {
       if (!quiet) new Notice("Syncian: connect your account first (Settings → Syncian).");
       return;
     }
-    if (quiet && this.settings.paused) return;
+    // Auto-sync is held both when the user paused and when we're waiting on a
+    // storage payment (quota_exceeded). Either way, only an explicit "Sync now"
+    // gets past this — see below, where a manual run clears the billing hold.
+    if (quiet && (this.settings.paused || this.settings.quotaBlocked)) return;
     if (this.engine.busy) {
       // Don't just drop this — a file changed (or the periodic timer fired)
       // while a sync was already running, and nothing else guarantees that
@@ -161,8 +164,13 @@ export default class ObsyncPlugin extends Plugin {
     }
     // An explicit "Sync now" is a good moment to retry anything that hit a
     // permanent plan limit last time — e.g. right after upgrading — without
-    // waiting for the file to change or Obsidian to restart.
-    if (!quiet) this.engine.clearBlocked();
+    // waiting for the file to change or Obsidian to restart. It's also the
+    // "I've paid, resume" action: drop the storage hold so the cycle actually
+    // runs (it re-sets below if we're still over quota).
+    if (!quiet) {
+      this.engine.clearBlocked();
+      this.settings.quotaBlocked = false;
+    }
     try {
       this.setStatus("starting…");
       const report = await this.engine.sync();
@@ -181,15 +189,31 @@ export default class ObsyncPlugin extends Plugin {
         console.warn("[obsync] sync errors:", report.errors);
         this.reportError("sync", report.errors.slice(0, 5).join("\n"));
       }
+      // Out of storage: hold auto-sync and tell the user, once. We deliberately
+      // don't reportError() this — it's a billing state, not a bug, and it's
+      // what used to spam the ops channel every cycle. The server has already
+      // pinged the user's Telegram to pay; here we just stop syncing until they
+      // do and press Sync now again.
+      if (report?.quotaBlocked) {
+        if (!this.settings.quotaBlocked) {
+          this.settings.quotaBlocked = true;
+          await this.savePersisted();
+        }
+        new Notice(
+          "Syncian: storage full — sync paused. Free up space or upgrade, then press “Sync now” to resume.",
+          10_000
+        );
+      }
     } catch (e) {
       this.pendingSyncErrorStreak++;
       console.error("[obsync] sync failed:", e);
-      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [String(e)], unwritablePaths: [] };
+      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [String(e)], unwritablePaths: [], quotaBlocked: false };
       this.lastReportAt = Date.now();
       this.reportError("sync failed", String(e));
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
     } finally {
       if (this.settings.paused) this.setStatus("paused");
+      else if (this.settings.quotaBlocked) this.setStatus("storage full — paused");
       if (this.pendingSync) {
         this.pendingSync = false;
         if (this.pendingSyncErrorStreak > 0) {

@@ -22,6 +22,9 @@ export class FakeApi {
   // Test hook: simulates the server's per-file plan-limit rejection.
   maxUploadSize: number | null = null;
   uploadAttempts = 0;
+  // Test hook: simulates the vault owner being out of storage. When true, any
+  // non-delete commit is rejected the way CommitFileChange does at quota.
+  quotaExceeded = false;
 
   async changes(_vaultId: string, since: number): Promise<ChangesPage> {
     const changes = [...this.entries.values()]
@@ -54,6 +57,9 @@ export class FakeApi {
   }
 
   async commit(_vaultId: string, payload: CommitPayload): Promise<ChangeRecord & { latest_revision: number }> {
+    if (this.quotaExceeded && !payload.deleted) {
+      throw new ApiError(403, "quota_exceeded", "Storage quota exceeded.");
+    }
     const existing = this.entries.get(payload.file_id);
     const currentVersion = existing?.version ?? 0;
     if (payload.base_version !== currentVersion) {

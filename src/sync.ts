@@ -33,6 +33,10 @@ export interface SyncReport {
   conflicts: number;
   merged: number; // concurrent edits resolved by a clean 3-way merge
   errors: string[];
+  // The vault owner ran out of storage mid-push (server said quota_exceeded).
+  // Account-level, so the push halts and the plugin pauses auto-sync until the
+  // user pays and manually re-syncs — see SyncEngine.push and main's syncNow.
+  quotaBlocked: boolean;
   // Remote files this device can never write: their names contain
   // characters Obsidian forbids (created outside Obsidian on the source
   // device). Skipped up front — no download, no per-cycle error spam.
@@ -60,10 +64,13 @@ export function isExcluded(path: string, excludes: string[]): boolean {
 }
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024;
-// Rejections that will keep failing every cycle until the file itself
-// changes or the owner's plan does — retrying them on an unchanged file is
-// pure waste (and, left unchecked, a self-sustaining hammer on the server).
-const PERMANENT_ERROR_CODES = new Set(["file_too_large", "quota_exceeded"]);
+// A single oversized file: skip just it and keep syncing the rest. It'll
+// keep failing every cycle until the file itself changes or the owner's plan
+// does, so don't re-attempt it in between (that'd be pure waste and, left
+// unchecked, a self-sustaining hammer on the server). quota_exceeded is NOT
+// here: it's account-level, not per-file, so it halts the whole push instead
+// — see the catch in push().
+const PERMANENT_ERROR_CODES = new Set(["file_too_large"]);
 const DOWNLOAD_BATCH = 100; // matches server MAX_BATCH in downloads_controller.rb
 const DOWNLOAD_CONCURRENCY = 8;
 const PUSH_CONCURRENCY = 6;
@@ -132,14 +139,17 @@ export class SyncEngine {
   async sync(): Promise<SyncReport | null> {
     if (this.running) return null;
     this.running = true;
-    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [], unwritablePaths: [] };
+    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [], unwritablePaths: [], quotaBlocked: false };
     try {
       this.codec = await this.codecProvider();
       this.cb.onStatus("pulling…");
       await this.pull(report);
       this.cb.onStatus("pushing…");
       await this.push(report);
-      if (this.cb.syncConfig()) await this.pushConfig(report);
+      // Once the account is over quota every further push fails identically,
+      // so don't even attempt the config pass — the vault push already flagged
+      // it and that's enough to pause the plugin.
+      if (this.cb.syncConfig() && !report.quotaBlocked) await this.pushConfig(report);
       this.state.lastSyncAt = Date.now();
       await this.cb.saveState();
       const at = new Date().toTimeString().slice(0, 5);
@@ -549,8 +559,12 @@ export class SyncEngine {
     // presign+PUT phases genuinely overlap, only commit briefly queues.
     let processed = 0;
     let next = 0;
+    // Flipped the moment any file hits quota_exceeded — an account-level limit,
+    // so every remaining push would fail the same way. Stops the workers from
+    // starting more files (in-flight ones just finish).
+    let quotaHalted = false;
     const worker = async () => {
-      while (next < localFiles.length) {
+      while (next < localFiles.length && !quotaHalted) {
         const file = localFiles[next++];
         try {
           await this.pushFile(file, byPath.get(file.path), report);
@@ -558,6 +572,14 @@ export class SyncEngine {
           if (e instanceof ApiError && e.code === "version_conflict") {
             // Another device won the race; next sync cycle pulls then re-pushes.
             report.errors.push(`deferred (conflict): ${file.path}`);
+          } else if (e instanceof ApiError && e.code === "quota_exceeded") {
+            // The vault is out of storage. Halt the whole push and flag it —
+            // the plugin pauses auto-sync and asks the user to pay, rather than
+            // re-hitting (and re-reporting) the same limit on every file, every
+            // cycle. Deliberately NOT recorded in report.errors: it's a billing
+            // state, not a bug, so it never goes to the error channel.
+            quotaHalted = true;
+            report.quotaBlocked = true;
           } else if (e instanceof ApiError && PERMANENT_ERROR_CODES.has(e.code)) {
             // Won't succeed again until the file or the plan changes — stop
             // retrying it every cycle.
@@ -578,6 +600,11 @@ export class SyncEngine {
       }
     };
     await Promise.all(Array.from({ length: Math.min(PUSH_CONCURRENCY, localFiles.length) }, worker));
+
+    // Over quota: bail before the deletion pass too. Deletes wouldn't fail on
+    // quota, but the point of the halt is to stop touching the server until the
+    // user has paid and explicitly re-synced.
+    if (quotaHalted) return;
 
     // Anything indexed but no longer on disk was deleted locally. Excluded
     // paths are skipped — excluding a folder must not delete it remotely.
@@ -664,6 +691,10 @@ export class SyncEngine {
       } catch (e) {
         if (e instanceof ApiError && e.code === "version_conflict") {
           report.errors.push(`deferred (conflict): ${cf.path}`);
+        } else if (e instanceof ApiError && e.code === "quota_exceeded") {
+          // Account-level — see push(). Flag and stop the config pass.
+          report.quotaBlocked = true;
+          break;
         } else if (e instanceof ApiError && PERMANENT_ERROR_CODES.has(e.code)) {
           this.blocked.set(cf.path, { size: cf.size, mtime: cf.mtime });
           report.errors.push(`skipped (${e.code}): ${cf.path} — will retry once the file changes or you upgrade`);
@@ -672,6 +703,8 @@ export class SyncEngine {
         }
       }
     }
+
+    if (report.quotaBlocked) return; // over quota — stop, same as push()
 
     // Config files indexed but no longer on disk were deleted locally.
     for (const [path, [fileId, entry]] of byPath) {
