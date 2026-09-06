@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, withTimeout } from "../src/api";
+import { ApiError, findVaultByName, withTimeout, type VaultInfo } from "../src/api";
 
 describe("withTimeout", () => {
   beforeEach(() => vi.useFakeTimers());
@@ -25,5 +25,22 @@ describe("withTimeout", () => {
     await withTimeout(Promise.resolve("ok"), 10_000);
     // If the timer weren't cleared, this would blow up as an unhandled rejection.
     await vi.advanceTimersByTimeAsync(10_000);
+  });
+});
+
+describe("findVaultByName", () => {
+  const vault = (id: number, name: string): VaultInfo => ({ id, name, latest_revision: 0, key_check: null });
+
+  it("matches case- and whitespace-insensitively", () => {
+    const vaults = [ vault(1, "Indalamar Labs"), vault(2, "Work") ];
+    expect(findVaultByName(vaults, "  indalamar labs  ")).toBe(vaults[0]);
+  });
+
+  it("returns undefined when nothing matches", () => {
+    expect(findVaultByName([ vault(1, "Work") ], "Personal")).toBeUndefined();
+  });
+
+  it("returns undefined for an empty vault list", () => {
+    expect(findVaultByName([], "Anything")).toBeUndefined();
   });
 });

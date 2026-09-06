@@ -15,6 +15,15 @@ export function vaultLabel(v: VaultInfo): string {
   return v.role === "shared" && v.owner_identity ? `${v.owner_identity} — ${v.name}` : v.name;
 }
 
+// The server never rejects a duplicate name (createVault just makes another
+// row) — this is how the client warns before adding to the mess. Matches
+// case/whitespace-insensitively since that's how a person actually compares
+// two vault names.
+export function findVaultByName(vaults: VaultInfo[], name: string): VaultInfo | undefined {
+  const target = name.trim().toLowerCase();
+  return vaults.find((v) => v.name.trim().toLowerCase() === target);
+}
+
 export interface ChangeRecord {
   file_id: string;
   encrypted_path: string;

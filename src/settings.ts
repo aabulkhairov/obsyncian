@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
-import { vaultLabel } from "./api";
+import { findVaultByName, vaultLabel, type VaultInfo } from "./api";
 import { makeKeyCheck, unlock } from "./crypto";
 import type ObsyncPlugin from "./main";
 import { emptySyncState, type ConflictMode } from "./sync";
@@ -388,20 +388,47 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .setDesc("Create a new synced vault on the server, or pick an existing one to pull it into this vault.")
       .addButton((btn) =>
         btn.setButtonText("Create vault").setCta().onClick(async () => {
-          // Encryption must be a decision, not an accident of an empty field:
-          // with no passphrase, make the user explicitly pick plaintext.
-          if (!s.passphrase) {
-            new UnencryptedConfirmModal(this.app, (syncPlaintext) => {
-              if (syncPlaintext) void this.createVault();
-              // "Set a passphrase" → just stay on the tab; field is right above.
+          const name = this.pendingVaultName?.trim() || this.app.vault.getName();
+          const duplicate = await this.findDuplicateVault(name);
+          if (duplicate) {
+            new DuplicateVaultModal(this.app, duplicate, {
+              onLink: () => void this.linkToVault(duplicate),
+              onCreateAnyway: () => this.confirmEncryptionAndCreate(),
             }).open();
             return;
           }
-          await this.createVault();
+          this.confirmEncryptionAndCreate();
         })
       );
 
     this.displayExistingVaults(containerEl, s);
+  }
+
+  // Best-effort only: a lost/reset local vaultId (reinstall, logout, cleared
+  // plugin data) is what leads someone to press "Create vault" when they
+  // already have one by this name — see DuplicateVaultModal. If the lookup
+  // itself fails, don't let that block creating a vault; just skip the warning.
+  private async findDuplicateVault(name: string): Promise<VaultInfo | undefined> {
+    try {
+      const { vaults } = await this.plugin.api.listVaults();
+      return findVaultByName(vaults, name);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private confirmEncryptionAndCreate(): void {
+    const s = this.plugin.settings;
+    // Encryption must be a decision, not an accident of an empty field:
+    // with no passphrase, make the user explicitly pick plaintext.
+    if (!s.passphrase) {
+      new UnencryptedConfirmModal(this.app, (syncPlaintext) => {
+        if (syncPlaintext) void this.createVault();
+        // "Set a passphrase" → just stay on the tab; field is right above.
+      }).open();
+      return;
+    }
+    void this.createVault();
   }
 
   private async createVault(): Promise<void> {
@@ -425,6 +452,33 @@ export class ObsyncSettingTab extends PluginSettingTab {
     }
   }
 
+  // Shared by the "Existing vaults" dropdown and DuplicateVaultModal's
+  // "Link to existing vault" choice.
+  private async linkToVault(vault: VaultInfo): Promise<void> {
+    const s = this.plugin.settings;
+    if (vault.key_check) {
+      if (!s.passphrase) {
+        new Notice("Syncian: this vault is encrypted — enter its passphrase above first.");
+        return;
+      }
+      try {
+        await unlock(s.passphrase, vault.key_check);
+      } catch (e) {
+        new Notice(`Syncian: ${e instanceof Error ? e.message : e}`);
+        return;
+      }
+    }
+    s.vaultId = String(vault.id);
+    s.vaultName = vaultLabel(vault); // shared vaults show as "@owner — Name" everywhere
+    s.vaultKeyCheck = vault.key_check ?? "";
+    Object.assign(this.plugin.syncState, emptySyncState());
+    await this.plugin.clearBaseStore();
+    this.plugin.invalidateCodec();
+    await this.plugin.saveSettings();
+    new Notice(`Syncian: linked "${s.vaultName}" — next sync will merge its contents into this vault.`);
+    this.display();
+  }
+
   // Only calls the API once "Load existing vaults" is pressed.
   private displayExistingVaults(containerEl: HTMLElement, s: ObsyncSettings): void {
     const state = this.vaultsState;
@@ -440,27 +494,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         dd.onChange(async (id) => {
           const vault = state.vaults.find((v) => String(v.id) === id);
           if (!vault) return;
-          if (vault.key_check) {
-            if (!s.passphrase) {
-              new Notice("Syncian: this vault is encrypted — enter its passphrase above first.");
-              return;
-            }
-            try {
-              await unlock(s.passphrase, vault.key_check);
-            } catch (e) {
-              new Notice(`Syncian: ${e instanceof Error ? e.message : e}`);
-              return;
-            }
-          }
-          s.vaultId = id;
-          s.vaultName = vaultLabel(vault); // shared vaults show as "@owner — Name" everywhere
-          s.vaultKeyCheck = vault.key_check ?? "";
-          Object.assign(this.plugin.syncState, emptySyncState());
-          await this.plugin.clearBaseStore();
-          this.plugin.invalidateCodec();
-          await this.plugin.saveSettings();
-          new Notice(`Syncian: linked "${s.vaultName}" — next sync will merge its contents into this vault.`);
-          this.display();
+          await this.linkToVault(vault);
         });
         dd.setValue("");
       });
@@ -513,6 +547,46 @@ class UnencryptedConfirmModal extends Modal {
     plainBtn.onclick = () => {
       this.close();
       this.onChoice(true);
+    };
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+// Shown when "Create vault" would duplicate a name the account already has.
+// The server never rejects this (see findVaultByName in api.ts) — a device
+// that lost its local vaultId (reinstall, logout, cleared plugin data) would
+// otherwise silently end up with two same-named vaults and no way to tell
+// which is which.
+class DuplicateVaultModal extends Modal {
+  constructor(
+    app: App,
+    private existing: VaultInfo,
+    private choices: { onLink: () => void; onCreateAnyway: () => void }
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("You already have a vault with this name");
+    this.contentEl.createEl("p", {
+      text: `Your account already has a synced vault called "${this.existing.name}". If this device lost track of it ` +
+        "(reinstall, logout, or reset settings), linking to the existing one keeps everything together instead of " +
+        "splitting it across two separate vaults.",
+    });
+
+    const buttons = this.contentEl.createDiv({ cls: "modal-button-container" });
+    const linkBtn = buttons.createEl("button", { text: "Link to existing vault", cls: "mod-cta" });
+    linkBtn.onclick = () => {
+      this.close();
+      this.choices.onLink();
+    };
+    const createBtn = buttons.createEl("button", { text: "Create a separate vault anyway" });
+    createBtn.onclick = () => {
+      this.close();
+      this.choices.onCreateAnyway();
     };
   }
 
