@@ -19,10 +19,34 @@ export interface SyncState {
   cursor: number;
   files: Record<string, IndexEntry>; // keyed by file_id
   lastSyncAt?: number; // epoch ms of the last successful sync
+  // Which vault this index was built against. The index is only meaningful
+  // for that vault, so switching vaults must clear it — but re-linking the
+  // SAME vault (log out -> log back in, unlink -> relink) must NOT. Without
+  // an entry, pull replays from cursor 0 against files that are still on
+  // disk, and tryMerge never even runs (it needs the entry and its shadow
+  // base), so every file that isn't byte-identical to the server comes back
+  // as a conflict copy. See ObsyncPlugin.adoptVault.
+  vaultId?: string;
 }
 
 export function emptySyncState(): SyncState {
   return { cursor: 0, files: {} };
+}
+
+// Re-point `state` at `vaultId`, in place. Returns true when the existing
+// index belongs to that vault and was kept, false when it was a different
+// vault (or an index from before vaultId was tracked) and got cleared — the
+// caller then also drops the shadow bases, which are indexed the same way.
+export function adoptVaultState(state: SyncState, vaultId: string): boolean {
+  if (vaultId && state.vaultId === vaultId) return true;
+  // Assigned field by field, not via Object.assign(emptySyncState()) — that
+  // leaves optional keys the fresh state doesn't mention (lastSyncAt) in
+  // place, so the sidebar would report the *previous* vault's last sync.
+  state.cursor = 0;
+  state.files = {};
+  state.lastSyncAt = undefined;
+  state.vaultId = vaultId || undefined;
+  return false;
 }
 
 export interface SyncReport {

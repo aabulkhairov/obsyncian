@@ -3,6 +3,11 @@ import { FakeApi } from "./fake-api";
 import { makeClient } from "./helpers";
 import { conflictPath } from "../src/util";
 import { PlainCodec } from "../src/codec";
+import { adoptVaultState, emptySyncState, type IndexEntry, type SyncState } from "../src/sync";
+
+const FAKE_ENTRY: IndexEntry = {
+  path: "Note.md", version: 1, localHash: "aa", remoteHash: "bb", mtime: 1, size: 1,
+};
 
 function setup() {
   const server = new FakeApi();
@@ -499,6 +504,83 @@ describe("config sync (.obsidian folder)", () => {
     const copyPath = [...b.config.map.keys()].find((p) => p.includes("(conflict"));
     expect(copyPath).toBeDefined();
     expect(b.config.readText(copyPath!)).toBe('{"theme":"from-A"}');
+  });
+});
+
+// The bug behind the conflict-copy storms: Log out, Unlink and Link-vault all
+// wiped the index and the shadow bases while every file stayed on disk. The
+// next sync replayed from cursor 0 with an empty index, and applyRemoteChange
+// skips tryMerge entirely when there's no entry — so a perfectly mergeable
+// edit came back as a "(conflict …)" copy, ignoring "Automatically merge".
+describe("re-linking a vault", () => {
+  const BASE = "line one\nline two\nline three\n";
+
+  async function seedLinked() {
+    const server = new FakeApi();
+    const a = makeClient(server);
+    const b = makeClient(server);
+    a.vault.write("Note.md", BASE);
+    await a.engine.sync();
+    await b.engine.sync();
+    a.state.vaultId = "1";
+    b.state.vaultId = "1";
+    return { server, a, b };
+  }
+
+  // Divergence both devices could have merged cleanly: disjoint line edits.
+  async function diverge(a: ReturnType<typeof makeClient>, b: ReturnType<typeof makeClient>) {
+    b.vault.write("Note.md", "line one\nline two\nline three EDITED BY B\n");
+    await b.engine.sync();
+    a.vault.write("Note.md", "line one EDITED BY A\nline two\nline three\n");
+  }
+
+  it("keeps the index when the same vault is linked again, so the merge still runs", async () => {
+    const { a, b } = await seedLinked();
+    await diverge(a, b);
+
+    expect(adoptVaultState(a.state, "1")).toBe(true);
+    expect(Object.keys(a.state.files)).toHaveLength(1);
+
+    const report = await a.engine.sync();
+    expect(report?.merged).toBe(1);
+    expect(report?.conflicts).toBe(0);
+    expect(a.vault.read("Note.md")).toBe("line one EDITED BY A\nline two\nline three EDITED BY B\n");
+    expect(Object.keys(a.vault.snapshot()).some((p) => p.includes("(conflict"))).toBe(false);
+  });
+
+  it("wiping the index instead turns that same mergeable edit into a conflict copy", async () => {
+    const { a, b } = await seedLinked();
+    await diverge(a, b);
+
+    // What Log out / Unlink / Link-vault used to do unconditionally.
+    Object.assign(a.state, emptySyncState());
+    a.base.map.clear();
+
+    const report = await a.engine.sync();
+    expect(report?.conflicts).toBe(1);
+    expect(report?.merged).toBe(0);
+    expect(Object.keys(a.vault.snapshot()).some((p) => p.includes("(conflict"))).toBe(true);
+  });
+
+  it("clears the index when a different vault is linked", () => {
+    const state: SyncState = { cursor: 7, files: { f1: FAKE_ENTRY }, lastSyncAt: 123, vaultId: "1" };
+    expect(adoptVaultState(state, "2")).toBe(false);
+    // lastSyncAt too: otherwise the sidebar reports the previous vault's sync.
+    expect(state).toEqual({ cursor: 0, files: {}, lastSyncAt: undefined, vaultId: "2" });
+  });
+
+  it("clears an index from before vaultId was tracked", () => {
+    const state: SyncState = { cursor: 7, files: { f1: FAKE_ENTRY } };
+    expect(adoptVaultState(state, "1")).toBe(false);
+    expect(state).toEqual({ cursor: 0, files: {}, vaultId: "1" });
+  });
+
+  // Unlink leaves settings.vaultId empty; the index keeps naming its vault so
+  // a later re-link to it can be recognised as the same one.
+  it("clears the index when linking nothing at all", () => {
+    const state: SyncState = { cursor: 7, files: { f1: FAKE_ENTRY }, vaultId: "1" };
+    expect(adoptVaultState(state, "")).toBe(false);
+    expect(state).toEqual({ cursor: 0, files: {}, vaultId: undefined });
   });
 });
 

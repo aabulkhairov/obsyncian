@@ -5,7 +5,7 @@ import { AdapterConfigStore } from "./configstore";
 import { Codec, PlainCodec } from "./codec";
 import { CryptoCodec, unlock } from "./crypto";
 import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, clampSyncInterval, parseExcludes } from "./settings";
-import { SyncEngine, SyncReport, SyncState, emptySyncState } from "./sync";
+import { SyncEngine, SyncReport, SyncState, adoptVaultState, emptySyncState } from "./sync";
 import { ObsyncStatusView, VIEW_TYPE_OBSYNC } from "./view";
 import { WhatsNewModal, compareVersions, notesFor, notesSince } from "./whatsnew";
 
@@ -282,6 +282,22 @@ export default class ObsyncPlugin extends Plugin {
     for (const id of await this.baseStore.list()) await this.baseStore.remove(id);
   }
 
+  // Point the index at `vaultId`, clearing it only when that's a different
+  // vault than the one it was built against. Every link/create/unlink path
+  // goes through here so the decision lives in exactly one place.
+  //
+  // Clearing costs more than it looks: the next pull replays from cursor 0
+  // with an empty index while every file is still on disk, and sync.ts's
+  // 3-way merge is skipped entirely when there's no index entry (and the
+  // shadow bases are gone too) — so every file that isn't byte-identical to
+  // the server lands as a "(conflict …)" copy, ignoring the user's
+  // "Automatically merge" setting. Re-linking the same vault must therefore
+  // resume, not replay.
+  async adoptVault(vaultId: string) {
+    if (adoptVaultState(this.syncState, vaultId)) return;
+    await this.clearBaseStore();
+  }
+
   // One-shot at startup: drop bases whose file is no longer in the index
   // (deleted while the plugin was off, or left behind by an old bug).
   private async gcBaseStore() {
@@ -316,6 +332,12 @@ export default class ObsyncPlugin extends Plugin {
       this.settings.syncIntervalSeconds = clampSyncInterval(stored.syncIntervalMinutes * 60);
     }
     this.syncState = data?.syncState ?? emptySyncState();
+    // Indexes written before syncState carried a vaultId: adopt the vault
+    // that's currently linked, so the first re-link after upgrading resumes
+    // instead of replaying (which is the whole point of adoptVault).
+    if (!this.syncState.vaultId && this.settings.vaultId) {
+      this.syncState.vaultId = this.settings.vaultId;
+    }
   }
 
   async savePersisted() {

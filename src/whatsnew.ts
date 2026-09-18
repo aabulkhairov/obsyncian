@@ -10,6 +10,16 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.18",
+    notes: [
+      "### 🔁 Logging out no longer means starting over",
+      "Logging out, unlinking, or re-linking the **same** vault now picks up where you left off. Before, it reset the sync index while your notes stayed on disk — so the next sync treated every file as brand new and left a pile of `(conflict …)` copies behind, even with auto-merge on. Linking a *different* vault still resets, as it should.",
+      "",
+      "### 💬 Telegram login is easier to find",
+      "The **Telegram code** field now appears on its own when you open Settings — no button press needed. And if you paste a bot code like `K3-482910` into the email login box by mistake, Syncian tells you where it actually goes instead of failing with a confusing error.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.16",
     notes: [
       "### 🚫 Out of storage? Sync now pauses cleanly",

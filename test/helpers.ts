@@ -75,12 +75,13 @@ export function makeClient(
     ".obsidian/workspace.json",
   ]);
   const flags = { syncConfig: false, conflictMode: "merge" as ConflictMode };
+  const state = emptySyncState();
   const engine = new SyncEngine(
     app as unknown as App,
     server as unknown as ApiClient,
     async () => codec,
     () => "1",
-    emptySyncState(),
+    state,
     base,
     config,
     {
@@ -91,5 +92,5 @@ export function makeClient(
       conflictMode: () => flags.conflictMode,
     }
   );
-  return { app, vault: app.vault, engine, excluded, base, config, flags };
+  return { app, vault: app.vault, engine, excluded, base, config, flags, state };
 }
