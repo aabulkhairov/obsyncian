@@ -114,9 +114,11 @@ function progressText(prefix: string, current: number, total: number): string {
 
 // A plain `await Promise.resolve()` only flushes the microtask queue, which
 // isn't enough to let Obsidian's renderer actually paint a DOM update — a
-// real macrotask boundary (setTimeout) is what's needed.
+// real macrotask boundary (setTimeout) is what's needed. window.setTimeout,
+// not the bare global, so it resolves against the right window when the
+// vault is open in a popout.
 function yieldToRenderer(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
 // One pull+push cycle over the whole vault. No CRDTs: concurrent edits to a
@@ -522,7 +524,7 @@ export class SyncEngine {
     const remote = tryDecodeUtf8(remoteBytes);
     if (base === null || local === null || remote === null) return null;
     const { text, conflict } = merge3Markers(base, local, remote);
-    return { bytes: new TextEncoder().encode(text).buffer as ArrayBuffer, conflict };
+    return { bytes: new TextEncoder().encode(text).buffer, conflict };
   }
 
   private async applyRemoteDelete(change: ChangeRecord, entry: IndexEntry | undefined, report: SyncReport): Promise<void> {

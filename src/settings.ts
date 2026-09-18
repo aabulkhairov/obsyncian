@@ -234,7 +234,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Synchronize plugins & settings")
       .setDesc(
-        "Syncs your .obsidian folder (plugins, themes, snippets, settings) across your devices through the same end-to-end encryption. " +
+        // configDir rather than a hardcoded folder name — the config folder
+        // is user-configurable and this string is shown to them.
+        `Syncs your ${this.app.vault.configDir} folder (plugins, themes, snippets, settings) across your devices through the same end-to-end encryption. ` +
         "Off by default — desktop-only plugins may not work on mobile, and window layout is not synced. " +
         "Your Obsyncian login and passphrase are never uploaded. Turn it on across all your devices for best results."
       )

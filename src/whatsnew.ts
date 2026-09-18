@@ -33,7 +33,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       "Edit the same note on two devices and Syncian now merges non-overlapping changes into one file, instead of leaving a `(conflict)` copy. Overlapping edits still get a conflict copy, so nothing is ever lost.",
       "",
       "### 🧩 Sync plugins & settings (optional)",
-      "New toggle in **Settings → Syncian**: sync your `.obsidian` folder — plugins, themes, snippets, settings — across your devices, through the same end-to-end encryption. Off by default; your login and passphrase are never uploaded.",
+      "New toggle in **Settings → Syncian**: sync your Obsidian config folder — plugins, themes, snippets, settings — across your devices, through the same end-to-end encryption. Off by default; your login and passphrase are never uploaded.",
       "",
       "### 📝 Release notes after updates",
       "This popup. A short summary of what changed after each update. Turn it off in **Settings → Syncian**, or reopen it any time with the **“Syncian: What's new”** command.",
