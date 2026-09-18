@@ -2,7 +2,7 @@ import { App, Modal, Notice, Platform, PluginSettingTab, Setting } from "obsidia
 import { findVaultByName, vaultLabel, type VaultInfo } from "./api";
 import { makeKeyCheck, unlock } from "./crypto";
 import type ObsyncPlugin from "./main";
-import { emptySyncState, type ConflictMode } from "./sync";
+import { type ConflictMode } from "./sync";
 
 export interface ObsyncSettings {
   serverUrl: string;
@@ -55,6 +55,12 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   showReleaseNotes: true,
 };
 
+// The bot hands out codes as "<user prefix>-<6 digits>" ("K3-482910"); the
+// email field below takes a bare 6-digit code. A value with a prefix therefore
+// landed in the wrong box — catch it here rather than posting it with an empty
+// email and surfacing the server's "param is missing" 400 as the explanation.
+export const TELEGRAM_CODE_RE = /^[0-9A-Z]{1,6}-\d{6}$/i;
+
 export function parseExcludes(excludedFolders: string): string[] {
   return excludedFolders
     .split(/[\n,]/)
@@ -68,10 +74,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
   plugin: ObsyncPlugin;
   private pendingCode = "";
   private pendingVaultName: string | null = null;
-  // Nothing here fires a network request on its own — every section below
-  // starts idle and only calls the API in response to a button press. That's
-  // deliberate: opening Settings must never hang waiting on a server.
+  // No section here *blocks* on the network: display() always paints
+  // immediately and a fetch re-renders once it lands, so opening Settings
+  // never hangs waiting on a server.
   private telegramState: FetchState<{ bot: string }> = null;
+  // The Telegram config lookup is the one request we start unprompted — see
+  // #displayTelegramLogin for why it can't wait for a button press.
+  private telegramFetchStarted = false;
   private vaultsState: FetchState<{ vaults: import("./api").VaultInfo[] }> = null;
 
   constructor(app: App, plugin: ObsyncPlugin) {
@@ -109,8 +118,12 @@ export class ObsyncSettingTab extends PluginSettingTab {
           s.vaultId = "";
           s.vaultName = "";
           s.vaultKeyCheck = "";
-          Object.assign(this.plugin.syncState, emptySyncState());
-          await this.plugin.clearBaseStore();
+          // Deliberately keeps syncState and the shadow bases: logging back
+          // in and re-linking the same vault then resumes where it left off.
+          // Throwing them away is what turned a re-login into a burst of
+          // conflict copies — see ObsyncPlugin.adoptVault, which clears them
+          // if (and only if) a different vault is linked next. The index
+          // holds paths and hashes, no credentials.
           this.plugin.invalidateCodec();
           await this.plugin.saveSettings();
           this.display();
@@ -133,8 +146,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
           s.vaultId = "";
           s.vaultName = "";
           s.vaultKeyCheck = "";
-          Object.assign(this.plugin.syncState, emptySyncState());
-          await this.plugin.clearBaseStore();
+          // Kept, as on log out: re-linking this same vault resumes, and
+          // adoptVault clears the index if a different one is linked.
           this.plugin.invalidateCodec();
           await this.plugin.saveSettings();
           this.display();
@@ -277,6 +290,14 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .addText((text) => text.setPlaceholder("123456").onChange((v) => (this.pendingCode = v.trim())))
       .addButton((btn) =>
         btn.setButtonText("Verify").setCta().onClick(async () => {
+          if (TELEGRAM_CODE_RE.test(this.pendingCode)) {
+            new Notice('Syncian: that\'s a Telegram code — paste it into the "Telegram code" field below instead.');
+            return;
+          }
+          if (!s.email) {
+            new Notice("Syncian: enter your email above first, or use the Telegram login below.");
+            return;
+          }
           try {
             const res = await this.plugin.api.verify(s.email, this.pendingCode, this.deviceName());
             await this.completeLogin(res.token, res.identity ?? res.email, res.email);
@@ -289,10 +310,15 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.displayTelegramLogin(containerEl);
   }
 
-  // Zero-email alternative: the bot hands out codes like "K3-482910". Stays
-  // fully idle (no request) until "Continue with Telegram" is pressed.
+  // Zero-email alternative: the bot hands out codes like "K3-482910". The code
+  // field has to be on screen without being asked for — people arrive here
+  // already holding a code, and if the only visible input is the email flow's
+  // "Login code" box, that is where the code goes (empty email -> a 400 that
+  // reads like the code was wrong). So the config lookup starts on its own and
+  // this section renders the real field the moment it lands.
   private displayTelegramLogin(containerEl: HTMLElement): void {
     const state = this.telegramState;
+    if (state === null) void this.fetchTelegramConfig();
 
     if (state && "bot" in state) {
       new Setting(containerEl)
@@ -325,19 +351,35 @@ export class ObsyncSettingTab extends PluginSettingTab {
           : "No email needed — get a login code from our Telegram bot."
       );
 
-    setting.addButton((btn) =>
-      btn.setButtonText(state && "error" in state ? "Retry" : "Continue with Telegram").onClick(async () => {
-        btn.setDisabled(true).setButtonText("Checking…");
-        try {
-          const { telegram_bot, telegram_login } = await this.plugin.api.config();
-          this.telegramState =
-            telegram_login && telegram_bot ? { bot: telegram_bot } : { error: "not available on this server" };
-        } catch (e) {
-          this.telegramState = { error: e instanceof Error ? e.message : String(e) };
-        }
-        this.display();
-      })
-    );
+    if (state && "error" in state) {
+      setting.addButton((btn) =>
+        btn.setButtonText("Retry").onClick(() => {
+          this.telegramState = null;
+          this.telegramFetchStarted = false;
+          this.display();
+        })
+      );
+      return;
+    }
+
+    setting.addButton((btn) => btn.setDisabled(true).setButtonText("Checking…"));
+  }
+
+  // Fire-and-forget: display() has already painted by the time this resolves,
+  // and the re-render swaps "Checking…" for the code field (or for Retry).
+  private async fetchTelegramConfig(): Promise<void> {
+    if (this.telegramFetchStarted) return;
+    this.telegramFetchStarted = true;
+    try {
+      const { telegram_bot, telegram_login } = await this.plugin.api.config();
+      this.telegramState =
+        telegram_login && telegram_bot ? { bot: telegram_bot } : { error: "not available on this server" };
+    } catch (e) {
+      this.telegramState = { error: e instanceof Error ? e.message : String(e) };
+    }
+    // They may have logged in (or left) while this was in flight — repainting
+    // the login screen over the account view would be worse than doing nothing.
+    if (!this.plugin.settings.apiToken) this.display();
   }
 
   private deviceName(): string {
@@ -443,6 +485,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
       s.vaultId = String(vault.id);
       s.vaultName = vault.name;
       s.vaultKeyCheck = keyCheck ?? "";
+      // A brand-new vault is empty, but a leftover index would make the push
+      // scan skip every file whose mtime/size still matches — nothing would
+      // ever upload. adoptVault clears it (the id is always new here).
+      await this.plugin.adoptVault(s.vaultId);
       this.plugin.invalidateCodec();
       await this.plugin.saveSettings();
       new Notice(`Syncian: vault "${vault.name}" created and linked${keyCheck ? " (end-to-end encrypted)" : " (unencrypted)"}.`);
@@ -471,8 +517,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     s.vaultId = String(vault.id);
     s.vaultName = vaultLabel(vault); // shared vaults show as "@owner — Name" everywhere
     s.vaultKeyCheck = vault.key_check ?? "";
-    Object.assign(this.plugin.syncState, emptySyncState());
-    await this.plugin.clearBaseStore();
+    await this.plugin.adoptVault(s.vaultId);
     this.plugin.invalidateCodec();
     await this.plugin.saveSettings();
     new Notice(`Syncian: linked "${s.vaultName}" — next sync will merge its contents into this vault.`);
