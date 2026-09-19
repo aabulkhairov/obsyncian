@@ -148,10 +148,13 @@ export default class ObsyncPlugin extends Plugin {
       if (!quiet) new Notice("Syncian: connect your account first (Settings → Syncian).");
       return;
     }
-    // Auto-sync is held both when the user paused and when we're waiting on a
-    // storage payment (quota_exceeded). Either way, only an explicit "Sync now"
-    // gets past this — see below, where a manual run clears the billing hold.
-    if (quiet && (this.settings.paused || this.settings.quotaBlocked)) return;
+    // Auto-sync is held when the user paused, when we're waiting on a storage
+    // payment (quota_exceeded), and when the account has no active plan
+    // (payment_required). Either way, only an explicit "Sync now" gets past
+    // this — see below, where a manual run clears the billing hold. Without
+    // the billing holds, every timer tick would re-hit the same rejection and
+    // report it again: the 1.0.14 quota storm.
+    if (quiet && (this.settings.paused || this.settings.quotaBlocked || this.settings.paymentBlocked)) return;
     if (this.engine.busy) {
       // Don't just drop this — a file changed (or the periodic timer fired)
       // while a sync was already running, and nothing else guarantees that
@@ -170,6 +173,7 @@ export default class ObsyncPlugin extends Plugin {
     if (!quiet) {
       this.engine.clearBlocked();
       this.settings.quotaBlocked = false;
+      this.settings.paymentBlocked = false;
     }
     try {
       this.setStatus("starting…");
@@ -194,6 +198,19 @@ export default class ObsyncPlugin extends Plugin {
       // what used to spam the ops channel every cycle. The server has already
       // pinged the user's Telegram to pay; here we just stop syncing until they
       // do and press Sync now again.
+      // No active plan. Same treatment as running out of storage: pause,
+      // say so once, and never reportError() it — it's a billing state, not
+      // a bug, and the server has already nudged them in the bot.
+      if (report?.paymentRequired) {
+        if (!this.settings.paymentBlocked) {
+          this.settings.paymentBlocked = true;
+          await this.savePersisted();
+        }
+        new Notice(
+          "Syncian: sync needs an active plan — paused. Open the Obsyncian bot, run /upgrade, then press “Sync now”. Your notes stay on this device.",
+          10_000
+        );
+      }
       if (report?.quotaBlocked) {
         if (!this.settings.quotaBlocked) {
           this.settings.quotaBlocked = true;
@@ -207,12 +224,13 @@ export default class ObsyncPlugin extends Plugin {
     } catch (e) {
       this.pendingSyncErrorStreak++;
       console.error("[obsync] sync failed:", e);
-      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [String(e)], unwritablePaths: [], quotaBlocked: false };
+      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [String(e)], unwritablePaths: [], quotaBlocked: false, paymentRequired: false };
       this.lastReportAt = Date.now();
       this.reportError("sync failed", String(e));
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
     } finally {
       if (this.settings.paused) this.setStatus("paused");
+      else if (this.settings.paymentBlocked) this.setStatus("plan required — paused");
       else if (this.settings.quotaBlocked) this.setStatus("storage full — paused");
       if (this.pendingSync) {
         this.pendingSync = false;

@@ -57,6 +57,11 @@ export interface SyncReport {
   conflicts: number;
   merged: number; // concurrent edits resolved by a clean 3-way merge
   errors: string[];
+  // The account has no active plan (server said payment_required). Like
+  // quotaBlocked this is a billing state, not a bug: it must pause sync
+  // rather than retry, or every cycle re-reports the same rejection — the
+  // quota_exceeded storm of 1.0.14 is exactly that mistake.
+  paymentRequired: boolean;
   // The vault owner ran out of storage mid-push (server said quota_exceeded).
   // Account-level, so the push halts and the plugin pauses auto-sync until the
   // user pays and manually re-syncs — see SyncEngine.push and main's syncNow.
@@ -165,7 +170,7 @@ export class SyncEngine {
   async sync(): Promise<SyncReport | null> {
     if (this.running) return null;
     this.running = true;
-    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [], unwritablePaths: [], quotaBlocked: false };
+    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false };
     try {
       this.codec = await this.codecProvider();
       this.cb.onStatus("pulling…");
@@ -189,6 +194,16 @@ export class SyncEngine {
       this.cb.onStatus(report.errors.length ? `errors (${report.errors.length})` : `synced ${at}`);
       return report;
     } catch (e) {
+      // No active plan: stop the cycle quietly. pull() calls /changes before
+      // anything else, so this lands on the very first request — one flag per
+      // cycle instead of a rejection per file, and nothing in report.errors
+      // (a billing state must never reach the error channel).
+      if (e instanceof ApiError && e.code === "payment_required") {
+        report.paymentRequired = true;
+        this.running = false;
+        this.cb.onStatus("plan required — paused");
+        return report;
+      }
       report.errors.push(String(e));
       this.running = false;
       this.cb.onStatus("sync failed");

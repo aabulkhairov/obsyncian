@@ -23,6 +23,10 @@ export interface ObsyncSettings {
   // `paused` so we can show a billing-specific message and never conflate it
   // with a deliberate user pause. Cleared by any manual sync.
   quotaBlocked: boolean;
+  // Same shape as quotaBlocked, for "this account has no active plan".
+  // Separate so the message can say what to actually do about it, and so
+  // paying doesn't get confused with freeing up space.
+  paymentBlocked: boolean;
   reportErrors: boolean;
   syncPlugins: boolean;
   showReleaseNotes: boolean;
@@ -50,6 +54,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   conflictResolution: "merge",
   paused: false,
   quotaBlocked: false,
+  paymentBlocked: false,
   reportErrors: true,
   syncPlugins: false,
   showReleaseNotes: true,

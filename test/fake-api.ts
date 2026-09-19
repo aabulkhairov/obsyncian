@@ -25,8 +25,14 @@ export class FakeApi {
   // Test hook: simulates the vault owner being out of storage. When true, any
   // non-delete commit is rejected the way CommitFileChange does at quota.
   quotaExceeded = false;
+  // Test hook: the account has no active plan. The server gates every sync
+  // endpoint, so this rejects from the very first call of a cycle.
+  paymentRequired = false;
 
   async changes(_vaultId: string, since: number): Promise<ChangesPage> {
+    if (this.paymentRequired) {
+      throw new ApiError(402, "payment_required", "Syncing needs an active plan.");
+    }
     const changes = [...this.entries.values()]
       .filter((e) => e.revision > since)
       .sort((a, b) => a.revision - b.revision)

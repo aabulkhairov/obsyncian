@@ -584,6 +584,48 @@ describe("re-linking a vault", () => {
   });
 });
 
+// A billing state, not a bug. The server gates every sync endpoint, so an
+// unpaid account is rejected on the cycle's very first request — the engine
+// has to stop there and say so, not surface it as a sync error. Reporting it
+// per-cycle (or per-file) is what produced the 1.0.14 quota_exceeded storm:
+// 4,356 error reports from a handful of users.
+describe("no active plan", () => {
+  it("stops the cycle and flags it, without producing a sync error", async () => {
+    const { server, a } = setup();
+    a.vault.write("Note.md", "hello");
+    server.paymentRequired = true;
+
+    const report = await a.engine.sync();
+
+    expect(report?.paymentRequired).toBe(true);
+    expect(report?.errors).toEqual([]);
+    expect(report?.pushed).toBe(0);
+  });
+
+  it("does not reject, so the caller can pause rather than handle a throw", async () => {
+    const { server, a } = setup();
+    server.paymentRequired = true;
+
+    await expect(a.engine.sync()).resolves.toBeTruthy();
+  });
+
+  it("resumes normally once the plan is active", async () => {
+    const { server, a, b } = setup();
+    a.vault.write("Note.md", "hello");
+    server.paymentRequired = true;
+    await a.engine.sync();
+    expect(server.entries.size).toBe(0);
+
+    server.paymentRequired = false;
+    const report = await a.engine.sync();
+
+    expect(report?.paymentRequired).toBe(false);
+    expect(report?.pushed).toBe(1);
+    await b.engine.sync();
+    expect(b.vault.read("Note.md")).toBe("hello");
+  });
+});
+
 describe("conflictPath", () => {
   it("inserts the marker before the extension", () => {
     const d = new Date(2026, 6, 2, 11, 30);
