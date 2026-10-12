@@ -119,10 +119,26 @@ export class ObsyncStatusView extends ItemView {
     if (report.pushed) parts.push(`↑ ${report.pushed} uploaded`);
     if (report.deletedLocal) parts.push(`${report.deletedLocal} deleted locally`);
     if (report.deletedRemote) parts.push(`${report.deletedRemote} deleted remotely`);
+    if (report.renamed) parts.push(`${report.renamed} renamed`);
     if (report.merged) parts.push(`⇄ ${report.merged} auto-merged`);
     if (report.conflicts) parts.push(`⚠ ${report.conflicts} conflict(s)`);
-    if (!parts.length && !report.errors.length) parts.push("everything already in sync");
+    if (!parts.length && !report.errors.length && !report.heldDeletions) parts.push("everything already in sync");
     for (const part of parts) section.createDiv({ cls: "obsync-report-line", text: part });
+
+    if (report.heldDeletions) {
+      const box = section.createDiv({ cls: "obsync-errors" });
+      box.createDiv({
+        cls: "obsync-errors-title",
+        text: `${report.heldDeletions} synced files are missing from this device`,
+      });
+      box.createDiv({
+        cls: "obsync-error-line",
+        text: "Nothing was deleted on the server. Delete them everywhere only if you removed them on purpose.",
+      });
+      const actions = box.createDiv({ cls: "obsync-buttons" });
+      actions.createEl("button", { text: "Restore them" }).onclick = () => this.plugin.resolveHeldDeletions("restore");
+      actions.createEl("button", { text: "Delete everywhere", cls: "mod-warning" }).onclick = () => this.plugin.resolveHeldDeletions("delete");
+    }
 
     if (report.unwritablePaths.length) {
       const box = section.createDiv({ cls: "obsync-errors" });

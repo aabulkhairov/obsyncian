@@ -74,7 +74,7 @@ export function makeClient(
     ".obsidian/plugins/obsyncian",
     ".obsidian/workspace.json",
   ]);
-  const flags = { syncConfig: false, conflictMode: "merge" as ConflictMode };
+  const flags = { syncConfig: false, conflictMode: "merge" as ConflictMode, saves: 0 };
   const state = emptySyncState();
   const engine = new SyncEngine(
     app as unknown as App,
@@ -86,7 +86,7 @@ export function makeClient(
     config,
     {
       onStatus,
-      saveState: async () => {},
+      saveState: async () => { flags.saves++; },
       excludes: () => excluded,
       syncConfig: () => flags.syncConfig,
       conflictMode: () => flags.conflictMode,

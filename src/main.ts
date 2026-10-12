@@ -1,10 +1,11 @@
-import { Notice, Platform, Plugin, debounce } from "obsidian";
+import { Notice, Platform, Plugin, TFile, debounce } from "obsidian";
 import { ApiClient } from "./api";
 import { AdapterBaseStore } from "./basestore";
 import { AdapterConfigStore } from "./configstore";
 import { Codec, PlainCodec } from "./codec";
 import { CryptoCodec, unlock } from "./crypto";
 import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, clampSyncInterval, parseExcludes } from "./settings";
+import { ChangeSignal, LocalChanges } from "./signal";
 import { SyncEngine, SyncReport, SyncState, adoptVaultState, emptySyncState } from "./sync";
 import { ObsyncStatusView, VIEW_TYPE_OBSYNC } from "./view";
 import { WhatsNewModal, compareVersions, notesFor, notesSince } from "./whatsnew";
@@ -23,6 +24,7 @@ interface PersistedData {
 // consecutive error up to the cap; a single clean cycle resets it.
 const PENDING_BACKOFF_BASE_MS = 2_000;
 const PENDING_BACKOFF_MAX_MS = 60_000;
+const LAST_SYNC_SAVE_EVERY_MS = 10 * 60_000;
 
 export default class ObsyncPlugin extends Plugin {
   settings!: ObsyncSettings;
@@ -40,6 +42,15 @@ export default class ObsyncPlugin extends Plugin {
   // to 0 on any clean cycle. Drives the backoff below; a healthy chain (new
   // edits arriving while a sync is in flight) still re-runs instantly.
   private pendingSyncErrorStreak = 0;
+  // Held-deletion count the user was last told about, so the 5-minute timer
+  // doesn't repeat the same notice every cycle while they decide.
+  private heldDeletionsNotified = 0;
+  private signal!: ChangeSignal;
+  // Highest revision the server has announced that we haven't acted on.
+  private signalledRevision = 0;
+  // What savePersisted last wrote, to skip rewriting an unchanged data.json.
+  private lastSaved = "";
+  private lastSavedSyncAt = 0;
 
   async onload() {
     await this.loadPersisted();
@@ -78,6 +89,32 @@ export default class ObsyncPlugin extends Plugin {
       }
     );
 
+    // Server-pushed "the vault changed": pull now rather than at the next
+    // interval tick. Wait a moment first — a device pushing a batch commits
+    // several times in a row — and never start from inside a running sync.
+    const actOnSignal: () => unknown = debounce(() => {
+      if (this.engine.busy) {
+        actOnSignal();
+        return;
+      }
+      const revision = this.signalledRevision;
+      this.signalledRevision = 0;
+      // Our own commit echoed back, or something a pull has already covered.
+      if (this.engine.isOwnRevision(revision) || revision <= this.syncState.cursor) return;
+      void this.syncNow(true);
+    }, 1_000, true);
+    this.signal = new ChangeSignal({
+      serverUrl: () => this.settings.serverUrl,
+      token: () => this.settings.apiToken,
+      vaultId: () => this.settings.vaultId,
+      onRevision: (revision) => {
+        this.signalledRevision = Math.max(this.signalledRevision, revision);
+        actOnSignal();
+      },
+      onReconnect: () => void this.syncNow(true),
+    });
+    this.register(() => this.signal.stop());
+
     this.statusBarEl = this.addStatusBarItem();
     this.setStatus(this.settings.paused ? "paused" : "idle");
 
@@ -88,6 +125,8 @@ export default class ObsyncPlugin extends Plugin {
     this.addCommand({ id: "open-status", name: "Open sync status", callback: () => this.activateView() });
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
+    this.addCommand({ id: "confirm-deletions", name: "Confirm held deletions", callback: () => this.resolveHeldDeletions("delete") });
+    this.addCommand({ id: "restore-missing", name: "Restore missing files from the server", callback: () => this.resolveHeldDeletions("restore") });
     this.addCommand({ id: "toggle-pause", name: "Pause/resume sync", callback: () => this.togglePause() });
     this.addCommand({ id: "whats-new", name: "What's new", callback: () => new WhatsNewModal(this, notesFor(this.manifest.version)).open() });
 
@@ -100,15 +139,41 @@ export default class ObsyncPlugin extends Plugin {
     // no-ops quietly when not connected, so there's nothing unsafe about
     // always registering — it just does nothing useful until you actually
     // connect, then works immediately without needing a restart.
-    const scheduleSync = debounce(() => void this.syncNow(true), 5_000, true);
+    //
+    // The sync engine's own writes fire these events too. They're collected
+    // and, when the debounce fires, checked against what the engine says it
+    // did — only a change it didn't make is worth a sync.
+    const changes = new LocalChanges();
+    const scheduleSync = debounce(() => {
+      if (changes.takeReal((path, mtime) => this.engine.isOwnChange(path, mtime))) void this.syncNow(true);
+    }, 5_000, true);
     this.app.workspace.onLayoutReady(() => {
       void this.maybeShowWhatsNew();
       void this.gcBaseStore();
       void this.syncNow(true);
-      this.registerEvent(this.app.vault.on("create", scheduleSync));
-      this.registerEvent(this.app.vault.on("modify", scheduleSync));
-      this.registerEvent(this.app.vault.on("delete", scheduleSync));
-      this.registerEvent(this.app.vault.on("rename", scheduleSync));
+      this.registerEvent(this.app.vault.on("create", (file) => {
+        if (!(file instanceof TFile)) return; // an empty folder is nothing to sync
+        changes.note(file.path, file.stat.mtime);
+        scheduleSync();
+      }));
+      this.registerEvent(this.app.vault.on("modify", (file) => {
+        if (file instanceof TFile) changes.note(file.path, file.stat.mtime);
+        scheduleSync();
+      }));
+      this.registerEvent(this.app.vault.on("delete", (file) => {
+        if (file instanceof TFile) changes.note(file.path, null);
+        else changes.noteUnknown();
+        scheduleSync();
+      }));
+      this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+        if (file instanceof TFile) {
+          changes.note(oldPath, null);
+          changes.note(file.path, file.stat.mtime);
+        } else {
+          changes.noteUnknown();
+        }
+        scheduleSync();
+      }));
       this.registerInterval(
         window.setInterval(() => void this.syncNow(true), this.settings.syncIntervalSeconds * 1000)
       );
@@ -145,9 +210,11 @@ export default class ObsyncPlugin extends Plugin {
   // still works — pressing the button is explicit enough intent.
   async syncNow(quiet = false) {
     if (!this.connected) {
+      this.signal.stop();
       if (!quiet) new Notice("Syncian: connect your account first (Settings → Syncian).");
       return;
     }
+    this.signal.refresh();
     // Auto-sync is held when the user paused, when we're waiting on a storage
     // payment (quota_exceeded), and when the account has no active plan
     // (payment_required). Either way, only an explicit "Sync now" gets past
@@ -185,6 +252,7 @@ export default class ObsyncPlugin extends Plugin {
       this.pendingSyncErrorStreak = report?.errors.length ? this.pendingSyncErrorStreak + 1 : 0;
       if (!quiet && report) {
         new Notice(`Syncian: ↓${report.pulled} ↑${report.pushed}` +
+          (report.renamed ? `, ${report.renamed} renamed` : "") +
           (report.merged ? `, ${report.merged} merged` : "") +
           (report.conflicts ? `, ${report.conflicts} conflict(s)` : "") +
           (report.errors.length ? `, ${report.errors.length} error(s) — see console` : ""));
@@ -211,6 +279,15 @@ export default class ObsyncPlugin extends Plugin {
           10_000
         );
       }
+      const held = report?.heldDeletions ?? 0;
+      if (held && (!quiet || held !== this.heldDeletionsNotified)) {
+        new Notice(
+          `Syncian: ${held} synced files are missing from this device. Nothing was deleted on the server. ` +
+          "If you deleted them on purpose, run “Confirm held deletions”; to get them back, run “Restore missing files from the server” (command palette or the Syncian sidebar).",
+          15_000
+        );
+      }
+      if (report) this.heldDeletionsNotified = held;
       if (report?.quotaBlocked) {
         if (!this.settings.quotaBlocked) {
           this.settings.quotaBlocked = true;
@@ -224,7 +301,7 @@ export default class ObsyncPlugin extends Plugin {
     } catch (e) {
       this.pendingSyncErrorStreak++;
       console.error("[obsync] sync failed:", e);
-      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, errors: [String(e)], unwritablePaths: [], quotaBlocked: false, paymentRequired: false };
+      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0 };
       this.lastReportAt = Date.now();
       this.reportError("sync failed", String(e));
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
@@ -242,6 +319,12 @@ export default class ObsyncPlugin extends Plugin {
         }
       }
     }
+  }
+
+  // The user's answer to a held mass deletion — see SyncEngine.push.
+  resolveHeldDeletions(decision: "delete" | "restore") {
+    this.engine.resolveHeldDeletions(decision);
+    void this.syncNow();
   }
 
   // Opt-out, on by default. Fire-and-forget: never awaited by a caller,
@@ -358,8 +441,19 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
+  // The sync engine calls this several times a cycle, and most cycles change
+  // nothing — so don't rewrite data.json (the whole index, megabytes on a big
+  // vault) unless something in it actually differs. lastSyncAt moves every
+  // cycle by design; on its own it's only worth a write once in a while.
   async savePersisted() {
-    await this.saveData({ settings: this.settings, syncState: this.syncState, lastNotesVersion: this.lastNotesVersion } satisfies PersistedData);
+    const data = { settings: this.settings, syncState: this.syncState, lastNotesVersion: this.lastNotesVersion } satisfies PersistedData;
+    const { lastSyncAt, ...index } = this.syncState;
+    const snapshot = JSON.stringify({ ...data, syncState: index });
+    const syncedAt = lastSyncAt ?? 0;
+    if (snapshot === this.lastSaved && syncedAt - this.lastSavedSyncAt < LAST_SYNC_SAVE_EVERY_MS) return;
+    await this.saveData(data);
+    this.lastSaved = snapshot;
+    this.lastSavedSyncAt = syncedAt;
   }
 
   // Kept for settings-tab convenience.

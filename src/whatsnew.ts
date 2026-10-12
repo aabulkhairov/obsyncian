@@ -10,6 +10,25 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.19",
+    notes: [
+      "### 🔀 Far fewer conflict files",
+      "Syncian now merges much more on its own. Adding to the same list on two devices keeps both additions. Edits to different sentences of one paragraph merge word by word. The same daily note created on two devices becomes one note instead of a `(conflict …)` copy. Only edits to the very same words still ask for your attention.",
+      "",
+      "### 📁 Renames stay renames",
+      "Renaming or moving a note (or a whole folder) no longer re-uploads it, and a rename on one device plus an edit on another ends up as one renamed, edited note. This switches on by itself once all devices on the vault have updated.",
+      "",
+      "### ⚡ Faster, and close to instant",
+      "Changes now reach your other devices within a second or two instead of waiting for the next sync interval, and large vaults upload many times faster.",
+      "",
+      "### 🛡️ Safer",
+      "A download that fails is retried instead of being skipped. An edit saved in the middle of a sync is no longer missed. And if a large part of your vault suddenly looks deleted on this device, Syncian asks before deleting anything on the server — with a one-click way to restore the files instead.",
+      "",
+      "### 🧩 Settings sync without the clutter",
+      "With plugin & settings sync on, settings changed on two devices are merged key by key rather than leaving conflict copies in your config folder.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.18",
     notes: [
       "### 🔁 Logging out no longer means starting over",

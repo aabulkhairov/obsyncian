@@ -1,3 +1,4 @@
+import { PlainCodec } from "../src/codec";
 import { describe, expect, it } from "vitest";
 import { FakeApi } from "./fake-api";
 import { makeClient } from "./helpers";
@@ -60,5 +61,23 @@ describe("crypto", () => {
       .join("");
     expect(allBlobs).not.toContain("step 1");
     expect(allBlobs).not.toContain("sync notes");
+  });
+
+  it("path tokens are deterministic per key and path, and reveal neither", async () => {
+    const { key } = await makeKeyCheck("pw");
+    const { key: otherKey } = await makeKeyCheck("pw");
+    const codec = new CryptoCodec(key);
+
+    const token = await codec.pathToken("Notes/Idea.md");
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(await codec.pathToken("Notes/Idea.md")).toBe(token);
+    expect(await new CryptoCodec(key).pathToken("Notes/Idea.md")).toBe(token);
+    expect(await codec.pathToken("Notes/Idea2.md")).not.toBe(token);
+    expect(await new CryptoCodec(otherKey).pathToken("Notes/Idea.md")).not.toBe(token);
+    expect(await new PlainCodec().pathToken("Notes/Idea.md")).not.toBe(token);
+    // Same name, composed vs decomposed (macOS hands out the latter).
+    expect(await codec.pathToken("caf\u00e9.md")).toBe(await codec.pathToken("cafe\u0301.md"));
+    // encodePath, by contrast, is randomized — which is why the token exists.
+    expect(await codec.encodePath("Notes/Idea.md")).not.toBe(await codec.encodePath("Notes/Idea.md"));
   });
 });

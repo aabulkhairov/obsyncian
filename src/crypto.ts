@@ -2,8 +2,8 @@
 // PBKDF2-derived key. The per-vault salt and a key-check value live on the
 // server (vault.key_check) so every device can derive and verify the same key
 // — the passphrase itself never leaves the device.
-import { Codec } from "./codec";
-import { base64Decode, base64Encode } from "./util";
+import { Codec, pathTokenInput } from "./codec";
+import { base64Decode, base64Encode, sha256Hex } from "./util";
 
 const ITERATIONS = 600_000;
 const IV_LENGTH = 12;
@@ -79,6 +79,18 @@ export class CryptoCodec implements Codec {
 
   async encodeContent(data: ArrayBuffer): Promise<ArrayBuffer> {
     return encryptBytes(this.key, data, MAGIC);
+  }
+
+  // A keyed PRF of the path built from the one key we have (it's a
+  // non-extractable AES-GCM key, so it can't feed HMAC): encrypt a fixed
+  // block under an IV derived from the path, then hash the result. The IV is
+  // a function of the path alone, so a given IV only ever encrypts this one
+  // fixed plaintext — never two different messages — and neither it nor the
+  // raw ciphertext leaves the device, only their hash.
+  async pathToken(path: string): Promise<string> {
+    const iv = new Uint8Array(await crypto.subtle.digest("SHA-256", pathTokenInput(path))).slice(0, IV_LENGTH);
+    const block = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv as BufferSource }, this.key, new Uint8Array(16));
+    return sha256Hex(block);
   }
 
   async decodeContent(data: ArrayBuffer): Promise<ArrayBuffer> {

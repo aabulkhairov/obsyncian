@@ -38,12 +38,21 @@ export interface ChangesPage {
   latest_revision: number;
   changes: ChangeRecord[];
   has_more: boolean;
+  // Everything below is absent on servers that predate it.
+  // The oldest sync protocol among the devices syncing this vault — anything
+  // an older plugin would mishandle is held back until it reaches ours.
+  min_protocol?: number;
+  // The server has the batch endpoints, taking up to this many items each.
+  batch_limit?: number;
+  // Echo on the following pages of a first-ever pull — see ApiClient.changes.
+  skip_deleted_through?: number;
 }
 
 export interface CommitPayload {
   file_id: string;
   base_version: number;
   encrypted_path: string;
+  path_token?: string;
   size?: number;
   ciphertext_hash?: string;
   blob_key?: string;
@@ -60,10 +69,28 @@ export class ApiError extends Error {
   }
 }
 
+// Announced on every authenticated request so the server knows what this
+// plugin can receive. 2: handles a change that moves a file and alters its
+// content at once — what makes in-place renames safe to send to it.
+export const SYNC_PROTOCOL = "2";
+
 const REQUEST_TIMEOUT_MS = 10_000;
-// Blob PUT/GET carry actual file bytes (up to the 250 MB plan cap) — a short
-// timeout would abort legitimate large transfers on a slow connection.
+// A batch is up to batch_limit files' worth of work for the server (it checks
+// each upload against storage), so it gets longer than a single call.
+const BATCH_TIMEOUT_MS = 60_000;
+// Blob PUT/GET carry actual file bytes (up to the 250 MB plan cap), so the
+// allowance grows with the size: this much flat, plus time to move the bytes
+// at a slow mobile uplink. A flat cap either cuts off big files on a slow
+// connection — which then restart from zero every cycle, forever — or lets a
+// dead transfer of a small one hang for minutes.
 const BLOB_TIMEOUT_MS = 120_000;
+const BLOB_MIN_BYTES_PER_SEC = 32 * 1024;
+
+function blobTimeout(bytes: number): number {
+  return BLOB_TIMEOUT_MS + Math.ceil(bytes / BLOB_MIN_BYTES_PER_SEC) * 1000;
+}
+
+export type BatchItemError = { error: { code: string; message: string } };
 
 export function withTimeout<T>(promise: Promise<T>, ms: number, label = ""): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -79,6 +106,19 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, label = ""): Pro
       (e: unknown) => { window.clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); }
     );
   });
+}
+
+// withTimeout for a fetch: on timeout the request is actually cancelled, not
+// just abandoned — an upload left running would keep the connection (and the
+// file's bytes) busy while the next cycle starts the same upload again.
+async function abortable<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, label: string): Promise<T> {
+  const controller = new AbortController();
+  try {
+    return await withTimeout(run(controller.signal), ms, label);
+  } catch (e) {
+    controller.abort();
+    throw e;
+  }
 }
 
 export class ApiClient {
@@ -115,8 +155,15 @@ export class ApiClient {
     return this.req("POST", "/v1/vaults", { name, key_check: keyCheck });
   }
 
-  changes(vaultId: string, since: number): Promise<ChangesPage> {
-    return this.req("GET", `/v1/vaults/${vaultId}/changes?since=${since}`);
+  // `fresh`: this device has nothing yet, so the server may leave out files
+  // that were already deleted before it arrived; it answers with
+  // skip_deleted_through, to be passed back for the rest of that pull.
+  changes(vaultId: string, since: number, opts: { fresh?: boolean; skipDeletedThrough?: number } = {}): Promise<ChangesPage> {
+    const extra =
+      opts.skipDeletedThrough !== undefined ? `&skip_deleted_through=${opts.skipDeletedThrough}`
+        : opts.fresh ? "&fresh=1"
+        : "";
+    return this.req("GET", `/v1/vaults/${vaultId}/changes?since=${since}${extra}`);
   }
 
   presignUpload(vaultId: string, size: number): Promise<{ blob_key: string; put_url: string }> {
@@ -125,6 +172,16 @@ export class ApiClient {
 
   commit(vaultId: string, payload: CommitPayload): Promise<ChangeRecord & { latest_revision: number }> {
     return this.req("POST", `/v1/vaults/${vaultId}/commit`, payload);
+  }
+
+  // Batch forms of the two calls above: one answer per item, in order, each
+  // either the result or its own error.
+  presignUploads(vaultId: string, sizes: number[]): Promise<{ uploads: ({ blob_key: string; put_url: string } | BatchItemError)[] }> {
+    return this.req("POST", `/v1/vaults/${vaultId}/uploads/batch`, { sizes }, true, BATCH_TIMEOUT_MS);
+  }
+
+  commitBatch(vaultId: string, commits: CommitPayload[]): Promise<{ results: ({ change: ChangeRecord } | BatchItemError)[]; latest_revision: number }> {
+    return this.req("POST", `/v1/vaults/${vaultId}/commits`, { commits }, true, BATCH_TIMEOUT_MS);
   }
 
   presignDownloads(vaultId: string, fileIds: string[]): Promise<{ downloads: { file_id: string; get_url: string }[] }> {
@@ -139,27 +196,33 @@ export class ApiClient {
   // requestUrl) so large bodies stream properly; the bucket's CORS policy
   // allows Obsidian's origins.
   async putBlob(url: string, data: ArrayBuffer): Promise<void> {
-    const res = await withTimeout(fetch(url, { method: "PUT", body: data }), BLOB_TIMEOUT_MS, "blob upload");
+    const res = await abortable(
+      (signal) => fetch(url, { method: "PUT", body: data, signal }),
+      blobTimeout(data.byteLength), "blob upload"
+    );
     if (!res.ok) throw new ApiError(res.status, "blob_put_failed", `Blob upload failed: HTTP ${res.status}`);
   }
 
-  async getBlob(url: string): Promise<ArrayBuffer> {
-    const res = await withTimeout(fetch(url), BLOB_TIMEOUT_MS, "blob download");
-    if (!res.ok) throw new ApiError(res.status, "blob_get_failed", `Blob download failed: HTTP ${res.status}`);
-    return res.arrayBuffer();
+  // `size` (the change's recorded size) only scales the timeout.
+  async getBlob(url: string, size = 0): Promise<ArrayBuffer> {
+    return abortable(async (signal) => {
+      const res = await fetch(url, { signal });
+      if (!res.ok) throw new ApiError(res.status, "blob_get_failed", `Blob download failed: HTTP ${res.status}`);
+      return res.arrayBuffer();
+    }, blobTimeout(size), "blob download");
   }
 
-  private async req<T>(method: string, path: string, body?: unknown, auth = true): Promise<T> {
+  private async req<T>(method: string, path: string, body?: unknown, auth = true, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     const res = await withTimeout(
       requestUrl({
         url: this.baseUrl().replace(/\/+$/, "") + path,
         method,
         contentType: body === undefined ? undefined : "application/json",
         body: body === undefined ? undefined : JSON.stringify(body),
-        headers: auth ? { Authorization: `Bearer ${this.token()}` } : {},
+        headers: auth ? { Authorization: `Bearer ${this.token()}`, "X-Obsyncian-Protocol": SYNC_PROTOCOL } : {},
         throw: false,
       }),
-      REQUEST_TIMEOUT_MS,
+      timeoutMs,
       `${method} ${path.split("?")[0]}`
     );
     if (res.status >= 400) {
