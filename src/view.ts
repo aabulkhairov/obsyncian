@@ -121,6 +121,7 @@ export class ObsyncStatusView extends ItemView {
     if (report.deletedRemote) parts.push(`${report.deletedRemote} deleted remotely`);
     if (report.renamed) parts.push(`${report.renamed} renamed`);
     if (report.merged) parts.push(`⇄ ${report.merged} auto-merged`);
+    if (report.deferred.length) parts.push(`${report.deferred.length} waiting for the next sync (changed on another device too)`);
     if (report.conflicts) parts.push(`⚠ ${report.conflicts} conflict(s)`);
     if (!parts.length && !report.errors.length && !report.heldDeletions) parts.push("everything already in sync");
     for (const part of parts) section.createDiv({ cls: "obsync-report-line", text: part });

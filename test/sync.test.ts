@@ -1109,7 +1109,8 @@ describe("one file per path", () => {
 
   it("the server refuses the second file and the loser merges into the first", async () => {
     const { server, a, b, raced } = await raceCreate();
-    expect(raced?.errors).toEqual(["deferred (conflict): Same.md"]);
+    expect(raced?.errors).toEqual([]);
+    expect(raced?.deferred).toEqual(["Same.md"]);
     expect(server.entries.size).toBe(1);
 
     for (let i = 0; i < 2; i++) { await b.engine.sync(); await a.engine.sync(); }
@@ -1194,7 +1195,9 @@ describe("two ids already sharing a path (vaults synced before the server enforc
     server.entries.get(ids[1])!.path_token = await new PlainCodec().pathToken("Same.md");
 
     a.vault.write("Same.md", "edited\n");
-    expect((await a.engine.sync())?.errors).toEqual(["deferred (conflict): Same.md"]);
+    const lost = await a.engine.sync();
+    expect(lost?.errors).toEqual([]);
+    expect(lost?.deferred).toEqual(["Same.md"]);
     expect((await a.engine.sync())?.errors).toEqual([]);
     expect(a.state.files[ids[0]].pathLost).toBe(true);
     expect(server.entries.get(ids[1])!.version).toBeGreaterThan(1);
@@ -1408,7 +1411,8 @@ describe("batched push", () => {
     pull.pull = async () => { (b.engine as unknown as { batchLimit: number }).batchLimit = 20; };
     const report = await b.engine.sync();
     pull.pull = realPull;
-    expect(report?.errors).toEqual(["deferred (conflict): shared.md"]);
+    expect(report?.errors).toEqual([]);
+    expect(report?.deferred).toEqual(["shared.md"]);
     expect(report?.pushed).toBe(1);
 
     await b.engine.sync();
@@ -1562,5 +1566,47 @@ describe("telling the engine's own activity from the user's", () => {
     expect(b.engine.isOwnChange("Never.md", null)).toBe(false);
     b.vault.delete("Moved.md");
     expect(b.engine.isOwnChange("Moved.md", null)).toBe(false);
+  });
+});
+
+describe("error reports never carry file names", () => {
+  it("keeps the path in the local error but replaces it in the reportable copy", async () => {
+    const { server, a } = setup();
+    a.vault.write("Семья/Личное/дневник.md", "a much longer secret note");
+    a.vault.write("ok.md", "fine");
+    server.maxUploadSize = 10;
+    const report = await a.engine.sync();
+    expect(report?.errors).toEqual(["skipped (file_too_large): Семья/Личное/дневник.md — will retry once the file changes or you upgrade"]);
+    expect(report?.reportable).toEqual(["skipped (file_too_large): <file> — will retry once the file changes or you upgrade"]);
+  });
+
+  it("a pull failure names the file only locally", async () => {
+    const { a, b } = setup();
+    a.vault.write("Private/plan.md", "x");
+    await a.engine.sync();
+    const vault = b.vault as unknown as { createBinary: (p: string, d: ArrayBuffer) => Promise<unknown> };
+    vault.createBinary = async (path: string) => { throw new Error(`cannot create ${path}`); };
+    const report = await b.engine.sync();
+    expect(report?.errors.join()).toContain("Private/plan.md");
+    expect(report?.reportable.join()).not.toContain("Private/plan.md");
+    expect(report?.reportable.join()).toContain("cannot create <file>");
+  });
+
+  it("a lost race is not an error at all", async () => {
+    const { a, b } = setup();
+    a.vault.write("n.md", "one\n");
+    await a.engine.sync();
+    await b.engine.sync();
+    a.vault.write("n.md", "one A\n");
+    await a.engine.sync();
+    b.vault.write("n.md", "one B\n");
+    const pull = b.engine as unknown as { pull: (r: unknown) => Promise<void> };
+    const realPull = pull.pull.bind(b.engine);
+    pull.pull = async () => {};
+    const report = await b.engine.sync();
+    pull.pull = realPull;
+    expect(report?.errors).toEqual([]);
+    expect(report?.reportable).toEqual([]);
+    expect(report?.deferred).toEqual(["n.md"]);
   });
 });

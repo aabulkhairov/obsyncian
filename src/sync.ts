@@ -85,6 +85,14 @@ export interface SyncReport {
   merged: number; // concurrent edits resolved by a clean 3-way merge
   renamed: number; // local renames/moves sent as such (no re-upload)
   errors: string[];
+  // The same errors with every file path replaced by "<file>": the only form
+  // that may leave the device (anonymous error reports). Note names are as
+  // private as note contents.
+  reportable: string[];
+  // Files whose push lost a race to another device (version_conflict,
+  // path_taken). Not errors: the next cycle pulls the other side, merges and
+  // pushes again.
+  deferred: string[];
   // The account has no active plan (server said payment_required). Like
   // quotaBlocked this is a billing state, not a bug: it must pause sync
   // rather than retry, or every cycle re-reports the same rejection — the
@@ -214,6 +222,13 @@ class RetryLater extends Error {}
 
 // Consecutive runs of changes whose blobs add up to at most `limit` bytes (a
 // single larger change gets a slice to itself).
+// Records an error in full for this device's own display, and path-free for
+// anything that gets reported off the device.
+function recordError(report: SyncReport, message: string, path?: string): void {
+  report.errors.push(message);
+  report.reportable.push(path ? message.split(path).join("<file>") : message);
+}
+
 function slicesBySize(changes: ChangeRecord[], limit: number): ChangeRecord[][] {
   const slices: ChangeRecord[][] = [];
   let current: ChangeRecord[] = [];
@@ -338,7 +353,7 @@ export class SyncEngine {
   async sync(): Promise<SyncReport | null> {
     if (this.running) return null;
     this.running = true;
-    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0 };
+    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], reportable: [], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0 };
     const decision = this.heldDecision;
     this.heldDecision = null;
     this.confirmedMassDelete = decision === "delete";
@@ -381,7 +396,7 @@ export class SyncEngine {
         this.cb.onStatus("plan required — paused");
         return report;
       }
-      report.errors.push(String(e));
+      recordError(report, String(e));
       this.running = false;
       this.cb.onStatus("sync failed");
       throw e;
@@ -459,7 +474,11 @@ export class SyncEngine {
       await this.applyRemoteChange(change, report, blobs);
       if (this.state.pending) delete this.state.pending[change.file_id];
     } catch (e) {
-      if (!(e instanceof RetryLater)) report.errors.push(`pull ${change.file_id}: ${e}`);
+      if (!(e instanceof RetryLater)) {
+        let path: string | undefined;
+        try { path = normalizePath(await this.codec.decodePath(change.encrypted_path)); } catch { path = undefined; }
+        recordError(report, `pull ${change.file_id}: ${e}`, path);
+      }
       const pending = (this.state.pending ??= {});
       const prev = pending[change.file_id];
       const attempts = prev && prev.change.version === change.version ? prev.attempts + 1 : 1;
@@ -609,7 +628,7 @@ export class SyncEngine {
         try {
           blobs.set(fileId, await this.api.getBlob(url, sizes.get(fileId)));
         } catch (e) {
-          report.errors.push(`download ${fileId}: ${e}`);
+          recordError(report, `download ${fileId}: ${e}`);
         }
       }
     };
@@ -742,7 +761,7 @@ export class SyncEngine {
     await this.writeLocal(path, plaintext);
     const written = this.app.vault.getAbstractFileByPath(path);
     if (!(written instanceof TFile)) {
-      report.errors.push(`pull ${change.file_id}: wrote ${path} but can't stat it back`);
+      recordError(report, `pull ${change.file_id}: wrote ${path} but can't stat it back`, path);
       return;
     }
     this.updateEntry(change.file_id, {
@@ -1060,7 +1079,7 @@ export class SyncEngine {
         const job = await this.prepareJob(file.path, false, mtime, size, byPath.get(file.path), () => this.app.vault.readBinary(file));
         if (job) await this.enqueue(run, job);
       } catch (e) {
-        report.errors.push(`push ${file.path}: ${e}`);
+        recordError(report, `push ${file.path}: ${e}`, file.path);
       }
       processed++;
       if (processed % 5 === 0 || processed === localFiles.length) {
@@ -1250,7 +1269,7 @@ export class SyncEngine {
     if (e instanceof ApiError && (e.code === "version_conflict" || e.code === "path_taken")) {
       // Another device won the race — to this file, or to a new file at
       // this path. The next cycle pulls theirs, merges, then re-pushes.
-      report.errors.push(`deferred (conflict): ${job.path}`);
+      report.deferred.push(job.path);
       if (e.code === "path_taken" && job.entry) this.yieldPath(job.path, job.fileId);
     } else if (e instanceof ApiError && e.code === "quota_exceeded") {
       // The vault is out of storage. Halt the whole push and flag it —
@@ -1264,9 +1283,9 @@ export class SyncEngine {
       // Won't succeed again until the file or the plan changes — stop
       // retrying it every cycle.
       this.blocked.set(job.path, { size: job.size, mtime: job.mtime });
-      report.errors.push(`skipped (${e.code}): ${job.path} — will retry once the file changes or you upgrade`);
+      recordError(report, `skipped (${e.code}): ${job.path} — will retry once the file changes or you upgrade`, job.path);
     } else {
-      report.errors.push(`push ${job.path}: ${e}`);
+      recordError(report, `push ${job.path}: ${e}`, job.path);
     }
   }
 
@@ -1332,7 +1351,7 @@ export class SyncEngine {
         const [fileId, entry] = chunk[i];
         const result = results[i];
         if ("err" in result) {
-          report.errors.push(`delete ${entry.path}: ${result.err}`);
+          recordError(report, `delete ${entry.path}: ${result.err}`, entry.path);
           continue;
         }
         delete this.state.files[fileId];
@@ -1376,7 +1395,7 @@ export class SyncEngine {
         const job = await this.prepareJob(cf.path, true, cf.mtime, cf.size, byPath.get(cf.path), () => this.configStore.read(cf.path));
         if (job) await this.enqueue(run, job);
       } catch (e) {
-        report.errors.push(`push ${cf.path}: ${e}`);
+        recordError(report, `push ${cf.path}: ${e}`, cf.path);
       }
     }
     await this.flush(run);

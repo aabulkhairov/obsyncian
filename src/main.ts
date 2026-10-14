@@ -259,7 +259,7 @@ export default class ObsyncPlugin extends Plugin {
       }
       if (report?.errors.length) {
         console.warn("[obsync] sync errors:", report.errors);
-        this.reportError("sync", report.errors.slice(0, 5).join("\n"));
+        this.reportError("sync", report.reportable.slice(0, 5).join("\n"));
       }
       // Out of storage: hold auto-sync and tell the user, once. We deliberately
       // don't reportError() this — it's a billing state, not a bug, and it's
@@ -301,7 +301,7 @@ export default class ObsyncPlugin extends Plugin {
     } catch (e) {
       this.pendingSyncErrorStreak++;
       console.error("[obsync] sync failed:", e);
-      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0 };
+      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0 };
       this.lastReportAt = Date.now();
       this.reportError("sync failed", String(e));
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
