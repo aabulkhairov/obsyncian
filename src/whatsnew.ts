@@ -10,6 +10,16 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.20",
+    notes: [
+      "### 🔒 Error reports no longer include file names",
+      "If you leave anonymous error reports on, they now replace every file name with `<file>` before leaving your device. Earlier versions could include a note's path in a sync error. Your notes' contents were never included.",
+      "",
+      "### 🤝 Fewer false alarms",
+      "When another device saves the same note a moment before this one, Syncian waits for the next sync and merges, as before — but it no longer counts that as an error.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.19",
     notes: [
       "### 🔀 Far fewer conflict files",
