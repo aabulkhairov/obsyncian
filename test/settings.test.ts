@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { TELEGRAM_CODE_RE, clampSyncInterval, parseExcludes } from "../src/settings";
+import { ApiError } from "../src/api";
+import { TELEGRAM_CODE_RE, clampSyncInterval, createVaultErrorMessage, parseExcludes } from "../src/settings";
 
 describe("TELEGRAM_CODE_RE", () => {
   // The whole point: these are the values that used to be pasted into the
@@ -40,5 +41,19 @@ describe("parseExcludes", () => {
   it("splits on newlines and commas, trimming blanks", () => {
     expect(parseExcludes(" a, b\n\n c ,")).toEqual(["a", "b", "c"]);
     expect(parseExcludes("")).toEqual([]);
+  });
+});
+
+describe("createVaultErrorMessage", () => {
+  it("points a vault-limit refusal at the existing-vault picker", () => {
+    const msg = createVaultErrorMessage(
+      new ApiError(403, "vault_limit_reached", "Your plan allows 3 synced vault(s).")
+    );
+    expect(msg).toContain("Sync a vault you already have");
+    expect(msg).not.toContain("Error:");
+  });
+
+  it("passes any other error through", () => {
+    expect(createVaultErrorMessage(new Error("boom"))).toBe("Syncian: Error: boom");
   });
 });

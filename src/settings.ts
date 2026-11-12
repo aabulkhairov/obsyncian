@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
-import { findVaultByName, vaultLabel, type VaultInfo } from "./api";
+import { ApiError, findVaultByName, vaultLabel, type VaultInfo } from "./api";
 import { makeKeyCheck, unlock } from "./crypto";
 import type ObsyncPlugin from "./main";
 import { type ConflictMode } from "./sync";
@@ -66,6 +66,19 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
 // email and surfacing the server's "param is missing" 400 as the explanation.
 export const TELEGRAM_CODE_RE = /^[0-9A-Z]{1,6}-\d{6}$/i;
 
+// "Create vault" on a second device is the usual way people hit the vault
+// limit: they meant to sync a vault they already have. The server's bare
+// "Your plan allows 3 synced vault(s)." gave them no way forward.
+export function createVaultErrorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.code === "vault_limit_reached") {
+    return (
+      "Syncian: you already have the most vaults your plan allows. " +
+      "To sync one of them on this device, pick it under \u201cSync a vault you already have\u201d instead of creating a new one."
+    );
+  }
+  return `Syncian: ${e}`;
+}
+
 export function parseExcludes(excludedFolders: string): string[] {
   return excludedFolders
     .split(/[\n,]/)
@@ -87,6 +100,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
   // #displayTelegramLogin for why it can't wait for a button press.
   private telegramFetchStarted = false;
   private vaultsState: FetchState<{ vaults: import("./api").VaultInfo[] }> = null;
+  // Also fetched unprompted once logged in: whether the account already has
+  // vaults decides which linking path the screen leads with.
+  private vaultsFetchStarted = false;
 
   constructor(app: App, plugin: ObsyncPlugin) {
     super(app, plugin);
@@ -107,6 +123,14 @@ export class ObsyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
+
+    // The vault list belongs to one link attempt on one account: drop it
+    // outside the link screen so coming back (another account, an unlink)
+    // fetches a fresh one.
+    if (!s.apiToken || s.vaultId) {
+      this.vaultsState = null;
+      this.vaultsFetchStarted = false;
+    }
 
     if (!s.apiToken) {
       this.displayLogin(containerEl);
@@ -423,9 +447,20 @@ export class ObsyncSettingTab extends PluginSettingTab {
         });
       });
 
+    // A second device should almost always join an existing vault, so when
+    // the account has any, that path comes first and "Create" steps back.
+    void this.fetchVaults();
+    const state = this.vaultsState;
+    const hasExisting = !!state && "vaults" in state && state.vaults.length > 0;
+    if (hasExisting) this.displayExistingVaults(containerEl);
+
     new Setting(containerEl)
-      .setName("Vault name")
-      .setDesc("Shown in the vault picker on other devices. Defaults to this folder's name.")
+      .setName(hasExisting ? "Or create a new vault" : "Vault name")
+      .setDesc(
+        hasExisting
+          ? "Only for a separate vault that isn't synced anywhere yet. Shown in the vault picker on other devices."
+          : "Shown in the vault picker on other devices. Defaults to this folder's name."
+      )
       .addText((text) =>
         text.setValue(this.pendingVaultName!).onChange((value) => {
           this.pendingVaultName = value;
@@ -433,10 +468,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Link a vault")
-      .setDesc("Create a new synced vault on the server, or pick an existing one to pull it into this vault.")
-      .addButton((btn) =>
-        btn.setButtonText("Create vault").setCta().onClick(async () => {
+      .setName(hasExisting ? "" : "Link a vault")
+      .setDesc(hasExisting ? "" : "Create a new synced vault on the server, or pick an existing one to pull it into this vault.")
+      .addButton((btn) => {
+        if (!hasExisting) btn.setCta();
+        btn.setButtonText("Create vault").onClick(async () => {
           const name = this.pendingVaultName?.trim() || this.app.vault.getName();
           const duplicate = await this.findDuplicateVault(name);
           if (duplicate) {
@@ -447,10 +483,26 @@ export class ObsyncSettingTab extends PluginSettingTab {
             return;
           }
           this.confirmEncryptionAndCreate();
-        })
-      );
+        });
+      });
 
-    this.displayExistingVaults(containerEl, s);
+    if (!hasExisting) this.displayExistingVaults(containerEl);
+  }
+
+  // Fire-and-forget, like fetchTelegramConfig: display() paints first and
+  // this re-renders once the list lands.
+  private async fetchVaults(): Promise<void> {
+    if (this.vaultsFetchStarted) return;
+    this.vaultsFetchStarted = true;
+    try {
+      const { vaults } = await this.plugin.api.listVaults();
+      this.vaultsState = { vaults };
+    } catch (e) {
+      this.vaultsState = { error: e instanceof Error ? e.message : String(e) };
+    }
+    // Linked meanwhile (or logged out) — the link screen is gone, leave it.
+    const s = this.plugin.settings;
+    if (s.apiToken && !s.vaultId) this.display();
   }
 
   // Best-effort only: a lost/reset local vaultId (reinstall, logout, cleared
@@ -501,7 +553,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
       new Notice(`Syncian: vault "${vault.name}" created and linked${keyCheck ? " (end-to-end encrypted)" : " (unencrypted)"}.`);
       this.display();
     } catch (e) {
-      new Notice(`Syncian: ${e}`);
+      new Notice(createVaultErrorMessage(e), 10_000);
+      if (e instanceof ApiError && e.code === "vault_limit_reached") {
+        // Refresh the list so the picker it points to is on screen and current.
+        this.vaultsState = null;
+        this.vaultsFetchStarted = false;
+        this.display();
+      }
     }
   }
 
@@ -531,44 +589,43 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.display();
   }
 
-  // Only calls the API once "Load existing vaults" is pressed.
-  private displayExistingVaults(containerEl: HTMLElement, s: ObsyncSettings): void {
+  private displayExistingVaults(containerEl: HTMLElement): void {
     const state = this.vaultsState;
+    const name = "Sync a vault you already have";
 
     if (state && "vaults" in state) {
-      const existing = new Setting(containerEl).setName("Existing vaults");
+      const existing = new Setting(containerEl).setName(name);
       if (!state.vaults.length) {
         existing.setDesc("No vaults on this account yet.");
         return;
       }
-      existing.addDropdown((dd) => {
-        for (const v of state.vaults) dd.addOption(String(v.id), vaultLabel(v));
-        dd.onChange(async (id) => {
-          const vault = state.vaults.find((v) => String(v.id) === id);
-          if (!vault) return;
-          await this.linkToVault(vault);
+      existing
+        .setDesc("Pick the vault you sync on your other devices. Enter its passphrase above first if it's encrypted.")
+        .addDropdown((dd) => {
+          dd.addOption("", "Choose a vault\u2026");
+          for (const v of state.vaults) dd.addOption(String(v.id), vaultLabel(v));
+          dd.setValue("");
+          dd.onChange(async (id) => {
+            const vault = state.vaults.find((v) => String(v.id) === id);
+            if (!vault) return;
+            await this.linkToVault(vault);
+          });
         });
-        dd.setValue("");
-      });
       return;
     }
 
-    const setting = new Setting(containerEl)
-      .setName("Existing vaults")
-      .setDesc(state && "error" in state ? `Couldn't load vaults: ${state.error}` : "Pick a vault synced from another device.");
-
-    setting.addButton((btn) =>
-      btn.setButtonText(state && "error" in state ? "Retry" : "Load existing vaults").onClick(async () => {
-        btn.setDisabled(true).setButtonText("Loading…");
-        try {
-          const { vaults } = await this.plugin.api.listVaults();
-          this.vaultsState = { vaults };
-        } catch (e) {
-          this.vaultsState = { error: e instanceof Error ? e.message : String(e) };
-        }
-        this.display();
-      })
-    );
+    const setting = new Setting(containerEl).setName(name);
+    if (state && "error" in state) {
+      setting.setDesc(`Couldn't load your vaults: ${state.error}`).addButton((btn) =>
+        btn.setButtonText("Retry").onClick(() => {
+          this.vaultsState = null;
+          this.vaultsFetchStarted = false;
+          this.display();
+        })
+      );
+      return;
+    }
+    setting.setDesc("Loading your vaults\u2026");
   }
 }
 

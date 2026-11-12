@@ -10,6 +10,15 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.21",
+    notes: [
+      "### 📲 Adding a device is clearer",
+      "On a new device, Syncian now lists the vaults you already sync and puts them first, so you can join the right one in a click. Creating a new vault is still there, below, for when you really want a separate one.",
+      "",
+      "If you do press \u201cCreate vault\u201d and your plan has no room for another, Syncian now tells you how to sync an existing vault instead of showing a bare error.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.20",
     notes: [
       "### 🔒 Error reports no longer include file names",
