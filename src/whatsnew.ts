@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.22",
+    notes: [
+      "### 💻 Two computers, one vault name — no more logging each other out",
+      "If two of your computers had a vault folder with the same name, logging in on one of them logged the other one out. Each device now gets its own short ID in its name, so they stay connected side by side.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.21",
     notes: [
       "### 📲 Adding a device is clearer",

@@ -66,6 +66,24 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
 // email and surfacing the server's "param is missing" 400 as the explanation.
 export const TELEGRAM_CODE_RE = /^[0-9A-Z]{1,6}-\d{6}$/i;
 
+// The server treats a login with an existing device name as that device
+// logging in again and drops the old session. Named only by platform and
+// vault folder, two computers with the same folder name ("Lime Event",
+// "Obsidian Vault") kept logging each other out. A short per-install id
+// keeps them apart, while a re-login from the same install still replaces
+// its own row.
+export const INSTALL_ID_RE = /^[0-9A-Z]{4}$/;
+
+export function newInstallId(): string {
+  const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const bytes = crypto.getRandomValues(new Uint8Array(4));
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+}
+
+export function deviceLabel(isMobile: boolean, vaultName: string, installId: string): string {
+  return `${isMobile ? "Mobile" : "Desktop"} · ${vaultName} · ${installId}`;
+}
+
 // "Create vault" on a second device is the usual way people hit the vault
 // limit: they meant to sync a vault they already have. The server's bare
 // "Your plan allows 3 synced vault(s)." gave them no way forward.
@@ -414,7 +432,19 @@ export class ObsyncSettingTab extends PluginSettingTab {
   }
 
   private deviceName(): string {
-    return `${Platform.isMobile ? "Mobile" : "Desktop"} · ${this.app.vault.getName()}`;
+    return deviceLabel(Platform.isMobile, this.app.vault.getName(), this.installId());
+  }
+
+  // Kept in Obsidian's local storage, which is per device and per vault and
+  // never synced — unlike data.json, which plugin & settings sync can copy
+  // to another device along with the id.
+  private installId(): string {
+    const key = "syncian-install-id";
+    const stored = this.app.loadLocalStorage(key);
+    if (typeof stored === "string" && INSTALL_ID_RE.test(stored)) return stored;
+    const id = newInstallId();
+    this.app.saveLocalStorage(key, id);
+    return id;
   }
 
   private async completeLogin(token: string, identity: string, email: string): Promise<void> {

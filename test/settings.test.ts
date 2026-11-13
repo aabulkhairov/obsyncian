@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../src/api";
-import { TELEGRAM_CODE_RE, clampSyncInterval, createVaultErrorMessage, parseExcludes } from "../src/settings";
+import {
+  INSTALL_ID_RE,
+  TELEGRAM_CODE_RE,
+  clampSyncInterval,
+  createVaultErrorMessage,
+  deviceLabel,
+  newInstallId,
+  parseExcludes,
+} from "../src/settings";
 
 describe("TELEGRAM_CODE_RE", () => {
   // The whole point: these are the values that used to be pasted into the
@@ -55,5 +63,24 @@ describe("createVaultErrorMessage", () => {
 
   it("passes any other error through", () => {
     expect(createVaultErrorMessage(new Error("boom"))).toBe("Syncian: Error: boom");
+  });
+});
+
+describe("device naming", () => {
+  it("keeps two installs with the same vault folder name apart", () => {
+    const a = deviceLabel(false, "Lime Event", newInstallId());
+    let b = deviceLabel(false, "Lime Event", newInstallId());
+    // 36^4 ids: retry the rare collision rather than flake.
+    while (b === a) b = deviceLabel(false, "Lime Event", newInstallId());
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^Desktop · Lime Event · [0-9A-Z]{4}$/);
+  });
+
+  it("generates ids the stored-id check accepts", () => {
+    for (let i = 0; i < 50; i++) expect(INSTALL_ID_RE.test(newInstallId())).toBe(true);
+  });
+
+  it("labels mobile installs", () => {
+    expect(deviceLabel(true, "Notes", "7KQ2")).toBe("Mobile · Notes · 7KQ2");
   });
 });
