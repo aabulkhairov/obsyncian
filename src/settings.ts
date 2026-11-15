@@ -435,12 +435,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
     return deviceLabel(Platform.isMobile, this.app.vault.getName(), this.installId());
   }
 
-  // Kept in Obsidian's local storage, which is per device and per vault and
+  // Kept in Obsidian's local storage (app.loadLocalStorage, Obsidian 1.8.7+,
+  // hence manifest minAppVersion), which is per device and per vault and
   // never synced — unlike data.json, which plugin & settings sync can copy
   // to another device along with the id.
   private installId(): string {
     const key = "syncian-install-id";
-    const stored = this.app.loadLocalStorage(key);
+    const stored: unknown = this.app.loadLocalStorage(key);
     if (typeof stored === "string" && INSTALL_ID_RE.test(stored)) return stored;
     const id = newInstallId();
     this.app.saveLocalStorage(key, id);

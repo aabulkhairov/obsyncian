@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.23",
+    notes: [
+      "### 🛠️ Back in the plugin directory",
+      "A maintenance release: Syncian now declares the Obsidian version it actually needs (1.8.7 or newer), which puts it back in the community plugin list. Nothing changes in how sync works.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.22",
     notes: [
       "### 💻 Two computers, one vault name — no more logging each other out",
