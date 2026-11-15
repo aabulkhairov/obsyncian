@@ -108,19 +108,6 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, label = ""): Pro
   });
 }
 
-// withTimeout for a fetch: on timeout the request is actually cancelled, not
-// just abandoned — an upload left running would keep the connection (and the
-// file's bytes) busy while the next cycle starts the same upload again.
-async function abortable<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, label: string): Promise<T> {
-  const controller = new AbortController();
-  try {
-    return await withTimeout(run(controller.signal), ms, label);
-  } catch (e) {
-    controller.abort();
-    throw e;
-  }
-}
-
 export class ApiClient {
   constructor(
     private baseUrl: () => string,
@@ -192,24 +179,23 @@ export class ApiClient {
     return this.req("POST", "/v1/errors", payload);
   }
 
-  // Blob transfers go straight to R2, not through the API server. fetch (not
-  // requestUrl) so large bodies stream properly; the bucket's CORS policy
-  // allows Obsidian's origins.
+  // Blob transfers go straight to R2, not through the API server. requestUrl,
+  // as Obsidian's review asks, can't be cancelled: a timed-out transfer is
+  // abandoned rather than aborted. Each upload gets a fresh presigned key, so
+  // a straggler can't overwrite a newer one — it only costs bandwidth.
   async putBlob(url: string, data: ArrayBuffer): Promise<void> {
-    const res = await abortable(
-      (signal) => fetch(url, { method: "PUT", body: data, signal }),
+    const res = await withTimeout(
+      requestUrl({ url, method: "PUT", contentType: "application/octet-stream", body: data, throw: false }),
       blobTimeout(data.byteLength), "blob upload"
     );
-    if (!res.ok) throw new ApiError(res.status, "blob_put_failed", `Blob upload failed: HTTP ${res.status}`);
+    if (res.status >= 400) throw new ApiError(res.status, "blob_put_failed", `Blob upload failed: HTTP ${res.status}`);
   }
 
   // `size` (the change's recorded size) only scales the timeout.
   async getBlob(url: string, size = 0): Promise<ArrayBuffer> {
-    return abortable(async (signal) => {
-      const res = await fetch(url, { signal });
-      if (!res.ok) throw new ApiError(res.status, "blob_get_failed", `Blob download failed: HTTP ${res.status}`);
-      return res.arrayBuffer();
-    }, blobTimeout(size), "blob download");
+    const res = await withTimeout(requestUrl({ url, throw: false }), blobTimeout(size), "blob download");
+    if (res.status >= 400) throw new ApiError(res.status, "blob_get_failed", `Blob download failed: HTTP ${res.status}`);
+    return res.arrayBuffer;
   }
 
   private async req<T>(method: string, path: string, body?: unknown, auth = true, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {

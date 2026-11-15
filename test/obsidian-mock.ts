@@ -34,10 +34,10 @@ export async function requestUrl(opts: {
   url: string;
   method?: string;
   contentType?: string;
-  body?: string;
+  body?: string | ArrayBuffer;
   headers?: Record<string, string>;
   throw?: boolean;
-}): Promise<{ status: number; text: string; json: unknown }> {
+}): Promise<{ status: number; text: string; json: unknown; arrayBuffer: ArrayBuffer }> {
   const res = await fetch(opts.url, {
     method: opts.method ?? "GET",
     headers: {
@@ -46,10 +46,12 @@ export async function requestUrl(opts: {
     },
     body: opts.body,
   });
-  const text = await res.text();
+  const arrayBuffer = await res.arrayBuffer();
+  const text = new TextDecoder().decode(arrayBuffer);
   return {
     status: res.status,
     text,
+    arrayBuffer,
     get json() {
       return JSON.parse(text);
     },

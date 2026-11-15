@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.24",
+    notes: [
+      "### 🛠️ Under-the-hood update",
+      "Syncian now transfers your files through Obsidian's own network layer, as Obsidian's plugin review recommends. Nothing changes in how sync works.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.23",
     notes: [
       "### 🛠️ Back in the plugin directory",
