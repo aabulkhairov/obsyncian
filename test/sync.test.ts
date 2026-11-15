@@ -1429,7 +1429,8 @@ describe("batched push", () => {
     server.commitBatch = async () => { throw new Error("network down"); };
     const failed = await a.engine.sync();
     expect(failed?.pushed).toBe(0);
-    expect(failed?.errors).toEqual(["push a.md: Error: network down", "push b.md: Error: network down"]);
+    // Files in a batch fail together, so the order of their errors is not meaningful.
+    expect([...(failed?.errors ?? [])].sort()).toEqual(["push a.md: Error: network down", "push b.md: Error: network down"]);
     server.commitBatch = real;
     expect((await a.engine.sync())?.pushed).toBe(2);
   });
