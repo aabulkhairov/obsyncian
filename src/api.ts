@@ -7,6 +7,8 @@ export interface VaultInfo {
   key_check: string | null;
   role?: "owner" | "shared";
   owner_identity?: string | null;
+  // Being copied into an encrypted vault right now (frozen for writes).
+  encrypting?: boolean;
 }
 
 // Shared vaults are labeled with their owner so two people's "Notes"
@@ -63,7 +65,10 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     public code: string,
-    message: string
+    message: string,
+    // The whole parsed error response, for codes that carry more than a
+    // message (vault_replaced names the vault that replaced this one).
+    public body?: unknown
   ) {
     super(message);
   }
@@ -153,6 +158,21 @@ export class ApiClient {
     return this.req("GET", `/v1/vaults/${vaultId}/changes?since=${since}${extra}`);
   }
 
+  // Encrypting a vault or changing its passphrase (see encrypt.ts): start
+  // returns the empty encrypted vault to copy into; finish switches over to
+  // it and deletes the source; cancel deletes the copy instead.
+  startEncryption(vaultId: string, keyCheck: string): Promise<{ vault: VaultInfo }> {
+    return this.req("POST", `/v1/vaults/${vaultId}/encryption`, { key_check: keyCheck });
+  }
+
+  finishEncryption(vaultId: string): Promise<{ vault: VaultInfo }> {
+    return this.req("POST", `/v1/vaults/${vaultId}/encryption/finish`, {}, true, BATCH_TIMEOUT_MS);
+  }
+
+  cancelEncryption(vaultId: string): Promise<void> {
+    return this.req("DELETE", `/v1/vaults/${vaultId}/encryption`);
+  }
+
   presignUpload(vaultId: string, size: number): Promise<{ blob_key: string; put_url: string }> {
     return this.req("POST", `/v1/vaults/${vaultId}/uploads`, { size });
   }
@@ -214,8 +234,9 @@ export class ApiClient {
     if (res.status >= 400) {
       let code = "http_error";
       let message = `HTTP ${res.status}`;
+      let parsed: { error?: { code?: string; message?: string } } | undefined;
       try {
-        const parsed = res.json as { error?: { code?: string; message?: string } } | undefined;
+        parsed = res.json as typeof parsed;
         const err = parsed?.error;
         if (err) {
           code = err.code ?? code;
@@ -224,7 +245,7 @@ export class ApiClient {
       } catch {
         // non-JSON error body
       }
-      throw new ApiError(res.status, code, message);
+      throw new ApiError(res.status, code, message, parsed);
     }
     try {
       return res.json as T;

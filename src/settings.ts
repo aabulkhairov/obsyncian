@@ -30,6 +30,38 @@ export interface ObsyncSettings {
   reportErrors: boolean;
   syncPlugins: boolean;
   showReleaseNotes: boolean;
+  // The linked vault became encrypted (from another device, or a passphrase
+  // change) and the passphrase on this device doesn't open it. Sync holds
+  // until the right one is entered.
+  needsPassphrase: boolean;
+  // An "Encrypt this vault" / "Change passphrase" in progress on this device,
+  // kept so it resumes after a restart. See ObsyncPlugin.encryptVault.
+  encryption: EncryptionJob | null;
+}
+
+export interface EncryptionJob {
+  sourceVaultId: string;
+  targetVaultId: string;
+  targetName: string;
+  keyCheck: string;
+  passphrase: string;
+  // copying: filling the new vault; finishing: copied and switched over,
+  // only the server's switch-over is left.
+  stage: "copying" | "finishing";
+  done: number;
+  total: number;
+  error?: string;
+}
+
+// A new passphrase (for a new vault, or encrypting/changing one). Existing
+// passphrases are never re-checked against this — only new ones.
+export const MIN_PASSPHRASE_LENGTH = 12;
+
+export function passphraseProblem(passphrase: string): string | null {
+  if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
+    return `Use at least ${MIN_PASSPHRASE_LENGTH} characters. Four random words make a strong passphrase that's easy to type.`;
+  }
+  return null;
 }
 
 export const MIN_SYNC_INTERVAL_S = 15;
@@ -58,6 +90,8 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   reportErrors: true,
   syncPlugins: false,
   showReleaseNotes: true,
+  needsPassphrase: false,
+  encryption: null,
 };
 
 // The bot hands out codes as "<user prefix>-<6 digits>" ("K3-482910"); the
@@ -160,8 +194,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .setDesc(s.identity || s.email)
       .addButton((btn) =>
         btn.setButtonText("Log out").setWarning().onClick(async () => {
+          if (s.encryption) {
+            new Notice("Syncian: finish or cancel the vault encryption first (below).");
+            return;
+          }
           s.apiToken = "";
           s.identity = "";
+          s.needsPassphrase = false;
           s.vaultId = "";
           s.vaultName = "";
           s.vaultKeyCheck = "";
@@ -190,6 +229,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
       )
       .addButton((btn) =>
         btn.setButtonText("Unlink").setWarning().onClick(async () => {
+          if (s.encryption) {
+            new Notice("Syncian: finish or cancel the vault encryption first (below).");
+            return;
+          }
+          s.needsPassphrase = false;
           s.vaultId = "";
           s.vaultName = "";
           s.vaultKeyCheck = "";
@@ -201,7 +245,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
         })
       );
 
-    if (s.vaultKeyCheck) {
+    this.displayEncryption(containerEl);
+
+    if (s.vaultKeyCheck && !s.needsPassphrase && !s.encryption) {
       new Setting(containerEl)
         .setName("Encryption passphrase")
         .setDesc("Needed to decrypt this vault. Stored on this device only.")
@@ -458,6 +504,94 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.display();
   }
 
+  // Encrypting the linked vault (or changing its passphrase), an encryption in
+  // progress, or a vault that became encrypted elsewhere and needs its
+  // passphrase here.
+  private displayEncryption(containerEl: HTMLElement): void {
+    const s = this.plugin.settings;
+    const job = s.encryption;
+
+    if (job) {
+      const running = this.plugin.encryptionRunningNow;
+      const progress = job.total ? ` ${job.done} of ${job.total} files copied.` : "";
+      const setting = new Setting(containerEl)
+        .setName(job.stage === "finishing" ? "Finishing encryption" : "Encryption in progress")
+        .setDesc(
+          (running ? "Encrypting this vault — keep Obsidian open." : "Paused.") + progress +
+          (job.error ? ` Last error: ${job.error}` : "") +
+          " Your notes are safe either way: nothing changes until the encrypted copy is complete."
+        );
+      if (!running) {
+        setting.addButton((btn) =>
+          btn.setButtonText("Resume").setCta().onClick(() => {
+            void this.plugin.resumeEncryption();
+            window.setTimeout(() => this.display(), 300);
+          })
+        );
+        if (job.stage === "copying") {
+          setting.addButton((btn) =>
+            btn.setButtonText("Cancel").onClick(async () => {
+              try {
+                await this.plugin.cancelEncryption();
+              } catch (e) {
+                new Notice(`Syncian: couldn't cancel — ${e instanceof Error ? e.message : e}`);
+              }
+              this.display();
+            })
+          );
+        }
+      }
+      return;
+    }
+
+    if (s.needsPassphrase) {
+      let entered = "";
+      new Setting(containerEl)
+        .setName("Passphrase needed")
+        .setDesc(
+          "This vault is now end-to-end encrypted. Enter its passphrase to keep syncing — " +
+          "the one set on the device that encrypted it (for a shared vault, ask its owner)."
+        )
+        .addText((text) => {
+          text.inputEl.type = "password";
+          text.setPlaceholder("passphrase").onChange((value) => {
+            entered = value;
+          });
+        })
+        .addButton((btn) =>
+          btn.setButtonText("Unlock").setCta().onClick(async () => {
+            try {
+              await this.plugin.enterPassphrase(entered);
+              new Notice("Syncian: unlocked — syncing.");
+              this.display();
+            } catch (e) {
+              new Notice(`Syncian: ${e instanceof Error ? e.message : e}`);
+            }
+          })
+        );
+      return;
+    }
+
+    const encrypted = !!s.vaultKeyCheck;
+    new Setting(containerEl)
+      .setName(encrypted ? "Change passphrase" : "Encrypt this vault")
+      .setDesc(
+        encrypted
+          ? "Re-encrypts the whole vault under a new passphrase. Your other devices will ask for the new one."
+          : "Turns on end-to-end encryption for this vault: after this, nobody but you — not even us — can read your notes or file names in the cloud."
+      )
+      .addButton((btn) => {
+        if (!encrypted) btn.setCta();
+        btn.setButtonText(encrypted ? "Change passphrase…" : "Encrypt this vault…").onClick(() => {
+          new EncryptVaultModal(this.app, encrypted ? "change" : "encrypt", async (passphrase) => {
+            window.setTimeout(() => this.display(), 300);
+            await this.plugin.encryptVault(passphrase);
+            this.display();
+          }).open();
+        });
+      });
+  }
+
   private displayVaultLink(containerEl: HTMLElement): void {
     const s = this.plugin.settings;
     if (this.pendingVaultName === null) this.pendingVaultName = this.app.vault.getName();
@@ -466,8 +600,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .setName("Encryption passphrase")
       .setDesc(
         "Encrypts everything on this device before upload — we can never read your notes. " +
-        "You'll need it on every device; if you lose it, your synced data is unrecoverable. " +
-        "Leave empty to sync unencrypted."
+        `For a new vault, use at least ${MIN_PASSPHRASE_LENGTH} characters; four random words work well. ` +
+        "You'll need it on every device; if you lose it, your synced data is unrecoverable."
       )
       .addText((text) => {
         text.inputEl.type = "password";
@@ -558,6 +692,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
         if (syncPlaintext) void this.createVault();
         // "Set a passphrase" → just stay on the tab; field is right above.
       }).open();
+      return;
+    }
+    const problem = passphraseProblem(s.passphrase);
+    if (problem) {
+      new Notice(`Syncian: ${problem}`, 10_000);
       return;
     }
     void this.createVault();
@@ -683,8 +822,15 @@ class UnencryptedConfirmModal extends Modal {
       this.close();
       this.onChoice(false);
     };
-    const plainBtn = buttons.createEl("button", { text: "Sync unencrypted" });
-    plainBtn.onclick = () => {
+    // Still possible, but no longer a button standing level with the safe
+    // choice: unencrypted is the exception you have to go looking for.
+    const plain = this.contentEl.createEl("a", {
+      text: "I understand — sync this vault without encryption",
+      cls: "obsync-muted",
+      href: "#",
+    });
+    plain.onclick = (ev) => {
+      ev.preventDefault();
       this.close();
       this.onChoice(true);
     };
@@ -728,6 +874,72 @@ class DuplicateVaultModal extends Modal {
       this.close();
       this.choices.onCreateAnyway();
     };
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+// "Encrypt this vault" / "Change passphrase": the new passphrase twice, what
+// happens, and what can't be undone. The work itself runs in the plugin
+// (ObsyncPlugin.encryptVault) and reports progress in settings.
+class EncryptVaultModal extends Modal {
+  private passphrase = "";
+  private confirmation = "";
+
+  constructor(
+    app: App,
+    private mode: "encrypt" | "change",
+    private onSubmit: (passphrase: string) => Promise<void>
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const encrypting = this.mode === "encrypt";
+    this.titleEl.setText(encrypting ? "Encrypt this vault" : "Change the passphrase");
+    const intro = this.contentEl.createEl("ul");
+    for (const line of [
+      encrypting
+        ? "Your notes and file names are encrypted on this device before upload. Nobody else — not even us — can read them in the cloud."
+        : "The whole vault is re-encrypted under the new passphrase. The old one stops working.",
+      "The vault is copied once, encrypted, then the old copy on our servers is deleted. Big vaults take a while — a computer is faster than a phone. It resumes if interrupted.",
+      "Your other devices will ask for the new passphrase. Collaborators on a shared vault need it from you too.",
+      "The vault's 30-day file history isn't carried over.",
+      "If you lose the passphrase, we can't recover the cloud copy. Your notes on your devices are unaffected.",
+    ]) intro.createEl("li", { text: line });
+
+    const status = this.contentEl.createEl("p", { cls: "obsync-muted" });
+    const go = (): HTMLButtonElement => submit;
+    const refresh = () => {
+      const problem = passphraseProblem(this.passphrase)
+        ?? (this.passphrase !== this.confirmation ? "The two passphrases don't match yet." : null);
+      status.setText(problem ?? "Ready.");
+      go().disabled = problem !== null;
+    };
+
+    new Setting(this.contentEl).setName(encrypting ? "Passphrase" : "New passphrase").addText((text) => {
+      text.inputEl.type = "password";
+      text.onChange((value) => { this.passphrase = value; refresh(); });
+    });
+    new Setting(this.contentEl).setName("Repeat it").addText((text) => {
+      text.inputEl.type = "password";
+      text.onChange((value) => { this.confirmation = value; refresh(); });
+    });
+
+    const buttons = this.contentEl.createDiv({ cls: "modal-button-container" });
+    const submit = buttons.createEl("button", { text: encrypting ? "Encrypt vault" : "Change passphrase", cls: "mod-cta" });
+    submit.onclick = () => {
+      const passphrase = this.passphrase;
+      this.close();
+      this.onSubmit(passphrase).catch((e: unknown) => {
+        new Notice(`Syncian: couldn't start — ${e instanceof Error ? e.message : String(e)}`, 10_000);
+      });
+    };
+    const cancel = buttons.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => this.close();
+    refresh();
   }
 
   onClose(): void {

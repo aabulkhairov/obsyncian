@@ -76,11 +76,13 @@ export function makeClient(
   ]);
   const flags = { syncConfig: false, conflictMode: "merge" as ConflictMode, saves: 0 };
   const state = emptySyncState();
+  // Which vault this client syncs; tests switch it the way settings would.
+  const vaultRef = { id: "1" };
   const engine = new SyncEngine(
     app as unknown as App,
     server as unknown as ApiClient,
     async () => codec,
-    () => "1",
+    () => vaultRef.id,
     state,
     base,
     config,
@@ -92,5 +94,5 @@ export function makeClient(
       conflictMode: () => flags.conflictMode,
     }
   );
-  return { app, vault: app.vault, engine, excluded, base, config, flags, state };
+  return { app, vault: app.vault, engine, excluded, base, config, flags, state, vaultRef };
 }
