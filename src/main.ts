@@ -1,5 +1,5 @@
 import { Notice, Platform, Plugin, TFile, debounce } from "obsidian";
-import { ApiClient } from "./api";
+import { ApiClient, ApiError } from "./api";
 import { AdapterBaseStore } from "./basestore";
 import { AdapterConfigStore } from "./configstore";
 import { Codec, PlainCodec } from "./codec";
@@ -377,7 +377,10 @@ export default class ObsyncPlugin extends Plugin {
       console.error("[obsync] sync failed:", e);
       this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false, vaultFrozen: false, vaultReplaced: null };
       this.lastReportAt = Date.now();
-      this.reportError("sync failed", String(e));
+      // The first frames say where an unexpected failure (a TypeError, not
+      // a refusal from the server) came from; file names never appear in them.
+      const where = e instanceof Error && !(e instanceof ApiError) ? `\n${(e.stack ?? "").split("\n").slice(1, 7).join("\n")}` : "";
+      this.reportError("sync failed", String(e) + where);
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
     } finally {
       if (this.settings.paused) this.setStatus("paused");
@@ -592,7 +595,15 @@ export default class ObsyncPlugin extends Plugin {
   async savePersisted() {
     const data = { settings: this.settings, syncState: this.syncState, lastNotesVersion: this.lastNotesVersion } satisfies PersistedData;
     const { lastSyncAt, ...index } = this.syncState;
-    const snapshot = JSON.stringify({ ...data, syncState: index });
+    let snapshot: string;
+    try {
+      snapshot = JSON.stringify({ ...data, syncState: index });
+    } catch (e) {
+      // Something that isn't plain data got into the settings or the index.
+      // Name the field, so the report says where instead of just "circular".
+      const where = findUnserializable(data, "data");
+      throw new Error(`can't save Syncian's settings: ${where ?? "unknown field"} is not plain data (${e instanceof Error ? e.message.split("\n")[0] : String(e)})`);
+    }
     const syncedAt = lastSyncAt ?? 0;
     if (snapshot === this.lastSaved && syncedAt - this.lastSavedSyncAt < LAST_SYNC_SAVE_EVERY_MS) return;
     await this.saveData(data);
@@ -613,4 +624,19 @@ function platformString(): string {
   if (Platform.isWin) return "windows";
   if (Platform.isLinux) return "linux";
   return Platform.isMobile ? "mobile-other" : "desktop-other";
+}
+
+// The path to the first value JSON can't hold (a DOM node, a window, an
+// event, a cycle), or null when there's none.
+function findUnserializable(value: unknown, path: string, seen = new Set<object>()): string | null {
+  if (value === null || typeof value !== "object") return typeof value === "function" ? null : null;
+  if (typeof window !== "undefined" && (value === window || value instanceof Node || value instanceof Event)) return path;
+  if (seen.has(value)) return `${path} (cycle)`;
+  seen.add(value);
+  for (const [key, child] of Object.entries(value)) {
+    const found = findUnserializable(child, `${path}.${key}`, seen);
+    if (found) return found;
+  }
+  seen.delete(value);
+  return null;
 }

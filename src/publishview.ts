@@ -91,7 +91,7 @@ async function copyToClipboard(text: string): Promise<void> {
   }
 }
 
-type FetchState<T> = null | { error: string } | T;
+type FetchState<T> = null | { error: string } | { hidden: true } | T;
 
 // The "Publish" section at the bottom of Settings → Syncian. Paints
 // immediately and re-renders the tab once the site list lands, like the
@@ -107,7 +107,13 @@ export class PublishSettingsSection {
     this.started = false;
   }
 
+  // Nothing at all until the server has answered: Publish is a private beta
+  // (the server answers publish_not_available to everyone else), so the
+  // section must not flash up for an account that will never see it.
   display(containerEl: HTMLElement): void {
+    void this.fetchSites();
+    if (this.state === null || "hidden" in this.state) return;
+
     const s = this.plugin.settings;
     new Setting(containerEl).setName("Publish").setHeading();
     containerEl.createEl("p", {
@@ -118,12 +124,7 @@ export class PublishSettingsSection {
         (s.vaultKeyCheck ? ", end-to-end encrypted." : "."),
     });
 
-    void this.fetchSites();
     const state = this.state;
-    if (state === null) {
-      new Setting(containerEl).setDesc("Loading your sites…");
-      return;
-    }
     if ("error" in state) {
       new Setting(containerEl).setDesc(`Couldn't load your sites: ${state.error}`).addButton((btn) =>
         btn.setButtonText("Retry").onClick(() => {
@@ -168,7 +169,7 @@ export class PublishSettingsSection {
       const { sites } = await this.plugin.api.listPublishSites();
       this.state = { sites };
     } catch (e) {
-      this.state = { error: publishErrorMessage(e) };
+      this.state = e instanceof ApiError && e.code === "publish_not_available" ? { hidden: true } : { error: publishErrorMessage(e) };
     }
     if (this.plugin.settings.apiToken && this.plugin.settings.vaultId) this.rerender();
   }
@@ -480,7 +481,11 @@ export function buildTree(paths: string[]): TreeFolder {
 // it, including notes added later; unticking one note inside keeps the rest.
 // The selection is saved per site on "Save".
 class NotePickerModal extends Modal {
-  private selection: PublishSelection;
+  // Not "selection": Obsidian's Modal (1.15+) keeps its own `selection`
+  // property and overwrites a subclass field of that name with an object
+  // holding the window — which then broke counting, and saving it made every
+  // later settings save throw "circular structure".
+  private picked: PublishSelection;
   private boxes = new Map<string, { input: HTMLInputElement; files: string[] }>();
   private totalsEl!: HTMLElement;
   private files: ReturnType<PublishSource["files"]>;
@@ -489,7 +494,7 @@ class NotePickerModal extends Modal {
     super(plugin.app);
     this.files = obsidianSource(plugin.app).files();
     const local = localFor(plugin, site.id);
-    this.selection = { include: [...local.selection.include], exclude: [...local.selection.exclude] };
+    this.picked = { include: [...local.selection.include], exclude: [...local.selection.exclude] };
   }
 
   onOpen(): void {
@@ -510,13 +515,21 @@ class NotePickerModal extends Modal {
 
     const buttons = contentEl.createDiv({ cls: "modal-button-container" });
     buttons.createEl("button", { text: "Clear" }).onclick = () => {
-      this.selection = emptySelection();
+      this.picked = emptySelection();
       this.refresh();
     };
     buttons.createEl("button", { text: "Cancel" }).onclick = () => this.close();
     buttons.createEl("button", { text: "Save", cls: "mod-cta" }).onclick = async () => {
-      localFor(this.plugin, this.site.id).selection = this.selection;
-      await this.plugin.saveSettings();
+      try {
+        localFor(this.plugin, this.site.id).selection = this.picked;
+        await this.plugin.saveSettings();
+      } catch (e) {
+        // A failure here used to vanish into an unhandled rejection, leaving
+        // a Save button that seemed to do nothing.
+        console.error("Syncian: saving the publish selection failed", e);
+        new Notice(`Syncian: couldn't save the selection — ${e instanceof Error ? e.message : String(e)}`, 15_000);
+        return;
+      }
       this.close();
       this.onSaved();
     };
@@ -555,17 +568,26 @@ class NotePickerModal extends Modal {
   }
 
   private toggle(path: string, on: boolean): void {
-    this.selection = setSelected(this.selection, path, on);
+    this.picked = setSelected(this.picked, path, on);
     this.refresh();
   }
 
   private refresh(): void {
+    try {
+      this.paintSelection();
+    } catch (e) {
+      console.error("Syncian: updating the note picker failed", e);
+      this.totalsEl.setText(`Couldn't count the selection: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  private paintSelection(): void {
     for (const { input, files } of this.boxes.values()) {
-      const picked = files.filter((p) => isSelected(this.selection, p)).length;
+      const picked = files.filter((p) => isSelected(this.picked, p)).length;
       input.checked = files.length > 0 && picked === files.length;
       input.indeterminate = picked > 0 && picked < files.length;
     }
-    const est = estimateSelection(this.files, this.selection, (path) => Object.keys(this.plugin.app.metadataCache.resolvedLinks[path] ?? {}));
+    const est = estimateSelection(this.files, this.picked, (path) => Object.keys(this.plugin.app.metadataCache.resolvedLinks[path] ?? {}));
     const others = est.attachments - est.images;
     this.totalsEl.setText(
       `${est.notes} note${est.notes === 1 ? "" : "s"} · ${est.images} image${est.images === 1 ? "" : "s"}` +
