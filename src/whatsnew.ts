@@ -10,6 +10,22 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.27",
+    notes: [
+      "### 🔐 Encrypt an existing vault",
+      "**Settings → Syncian → Encrypt this vault** turns on end-to-end encryption for a vault you already sync, in one step: it's copied once, encrypted on this device, and the readable copy on our servers is deleted. Your other devices simply ask for the passphrase.",
+      "",
+      "### 🔁 Change your passphrase",
+      "Already encrypted? **Change passphrase** re-encrypts the vault under a new one, the same way.",
+      "",
+      "### 🛡️ Stronger passphrases for new vaults",
+      "A new passphrase now needs at least 12 characters — four random words make a strong one that's easy to type.",
+      "",
+      "### 🌐 Publish notes as a website",
+      "**Settings → Syncian → Publish** turns the notes you pick into a public site at obsyncian.com/p/your-name. Choose notes in a tree, confirm they may become public, and Syncian uploads only what changed each time you update. Available on paid plans.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.26",
     notes: [
       "### ▶️ Sync resumes by itself after you pay",

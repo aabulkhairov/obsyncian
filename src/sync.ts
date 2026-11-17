@@ -1,5 +1,5 @@
 import { App, Notice, TFile, normalizePath } from "obsidian";
-import { ApiClient, ApiError, ChangeRecord, CommitPayload, isConnectionLoss } from "./api";
+import { ApiClient, ApiError, ChangeRecord, CommitPayload, isConnectionLoss, type VaultInfo } from "./api";
 import { BaseStore } from "./basestore";
 import { ConfigStore } from "./configstore";
 import { Codec } from "./codec";
@@ -76,6 +76,28 @@ export function adoptVaultState(state: SyncState, vaultId: string): boolean {
   return false;
 }
 
+// Points this device's index at `vaultId`, the encrypted copy that replaced
+// the vault it was built against. File ids carry over, so entries (and the
+// shadow bases keyed by them) stay. With `index` — the copying device, which
+// knows exactly what it uploaded — that index is taken as is. Without, every
+// entry keeps its path and its local hash but forgets the old vault's
+// version and ciphertext: the next pull downloads each file once, finds it
+// identical, and records the copy's version; a file edited here meanwhile
+// still merges against its base.
+export function moveStateToVault(state: SyncState, vaultId: string, index?: Record<string, IndexEntry>, cursor = 0): void {
+  state.vaultId = vaultId;
+  state.cursor = cursor;
+  state.pending = undefined;
+  state.renamesOk = undefined;
+  if (index) {
+    state.files = index;
+    return;
+  }
+  for (const [id, e] of Object.entries(state.files)) {
+    state.files[id] = { path: e.path, version: 0, localHash: e.localHash, remoteHash: null, mtime: e.mtime, size: e.size };
+  }
+}
+
 export interface SyncReport {
   pulled: number;
   pushed: number;
@@ -122,6 +144,13 @@ export interface SyncReport {
   // out — e.g. by another device logging in under the same name. Retrying
   // can't help; the plugin asks the user to log in again.
   signedOut: boolean;
+  // Another device is copying this vault into an encrypted one, and the
+  // server refuses writes until that's done (vault_encrypting). Local
+  // changes simply wait; nothing here is an error.
+  vaultFrozen: boolean;
+  // The vault was replaced by an encrypted copy (vault_replaced): the copy,
+  // for the plugin to switch to. The cycle stops here.
+  vaultReplaced: VaultInfo | null;
 }
 
 // How overlapping edits (same lines changed on two devices) are resolved:
@@ -367,7 +396,7 @@ export class SyncEngine {
   async sync(): Promise<SyncReport | null> {
     if (this.running) return null;
     this.running = true;
-    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], reportable: [], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false };
+    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], reportable: [], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false, vaultFrozen: false, vaultReplaced: null };
     this.interruptedIds.clear();
     const decision = this.heldDecision;
     this.heldDecision = null;
@@ -383,7 +412,7 @@ export class SyncEngine {
       // Once the account is over quota every further push fails identically,
       // so don't even attempt the config pass — the vault push already flagged
       // it and that's enough to pause the plugin.
-      if (this.cb.syncConfig() && !report.quotaBlocked) await this.pushConfig(report);
+      if (this.cb.syncConfig() && !report.quotaBlocked && !report.vaultFrozen) await this.pushConfig(report);
       this.state.lastSyncAt = Date.now();
       await this.cb.saveState();
       const at = new Date().toTimeString().slice(0, 5);
@@ -411,6 +440,17 @@ export class SyncEngine {
         this.running = false;
         this.cb.onStatus("plan required — paused");
         return report;
+      }
+      // The vault was encrypted from another device. Not an error either:
+      // the plugin follows it to the encrypted copy.
+      if (e instanceof ApiError && e.code === "vault_replaced") {
+        const vault = (e.body as { vault?: VaultInfo } | undefined)?.vault;
+        if (vault) {
+          report.vaultReplaced = vault;
+          this.running = false;
+          this.cb.onStatus("vault encrypted — passphrase needed");
+          return report;
+        }
       }
       // No connection at all: same as a transfer cut short, for the whole
       // cycle. Nothing is wrong; the plugin tries again once it's back.
@@ -1324,6 +1364,11 @@ export class SyncEngine {
       // this path. The next cycle pulls theirs, merges, then re-pushes.
       report.deferred.push(job.path);
       if (e.code === "path_taken" && job.entry) this.yieldPath(job.path, job.fileId);
+    } else if (e instanceof ApiError && e.code === "vault_encrypting") {
+      // Another device is encrypting this vault. Stop pushing; the local
+      // changes stay here and go up to the encrypted copy afterwards.
+      run.halted = true;
+      report.vaultFrozen = true;
     } else if (e instanceof ApiError && e.code === "quota_exceeded") {
       // The vault is out of storage. Halt the whole push and flag it —
       // the plugin pauses auto-sync and asks the user to pay, rather than
@@ -1405,6 +1450,7 @@ export class SyncEngine {
         const result = results[i];
         if ("err" in result) {
           if (isConnectionLoss(result.err)) report.interrupted++;
+          if (result.err instanceof ApiError && result.err.code === "vault_encrypting") report.vaultFrozen = true;
           else recordError(report, `delete ${entry.path}: ${result.err}`, entry.path);
           continue;
         }

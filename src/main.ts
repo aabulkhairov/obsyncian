@@ -8,6 +8,7 @@ import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, clampSyncInterval, 
 import { ChangeSignal, LocalChanges } from "./signal";
 import { hostOf, noteConnectivity } from "./connectivity";
 import { SyncEngine, SyncReport, SyncState, adoptVaultState, emptySyncState } from "./sync";
+import { VaultEncryption } from "./encrypt";
 import { ObsyncStatusView, VIEW_TYPE_OBSYNC } from "./view";
 import { WhatsNewModal, compareVersions, notesFor, notesSince } from "./whatsnew";
 
@@ -48,6 +49,7 @@ export default class ObsyncPlugin extends Plugin {
   // Held-deletion count the user was last told about, so the 5-minute timer
   // doesn't repeat the same notice every cycle while they decide.
   private heldDeletionsNotified = 0;
+  private frozenNotified = false;
   private signal!: ChangeSignal;
   // Highest revision the server has announced that we haven't acted on.
   private signalledRevision = 0;
@@ -118,6 +120,23 @@ export default class ObsyncPlugin extends Plugin {
     });
     this.register(() => this.signal.stop());
 
+    this.encryption = new VaultEncryption({
+      app: this.app,
+      api: this.api,
+      engine: this.engine,
+      configStore: this.configStore,
+      settings: () => this.settings,
+      syncState: () => this.syncState,
+      resolveCodec: () => this.resolveCodec(),
+      invalidateCodec: () => this.invalidateCodec(),
+      save: () => this.savePersisted(),
+      status: (text) => this.setStatus(text),
+      notice: (text, ms) => new Notice(text, ms),
+      reportError: (context, message) => this.reportError(context, message),
+      changed: () => this.refreshViews(),
+      syncAfter: () => void this.syncNow(true),
+    });
+
     this.statusBarEl = this.addStatusBarItem();
     this.setStatus(this.settings.paused ? "paused" : "idle");
 
@@ -153,7 +172,8 @@ export default class ObsyncPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       void this.maybeShowWhatsNew();
       void this.gcBaseStore();
-      void this.syncNow(true);
+      if (this.settings.encryption) void this.resumeEncryption();
+      else void this.syncNow(true);
       this.registerEvent(this.app.vault.on("create", (file) => {
         if (!(file instanceof TFile)) return; // an empty folder is nothing to sync
         changes.note(file.path, file.stat.mtime);
@@ -231,6 +251,18 @@ export default class ObsyncPlugin extends Plugin {
       return;
     }
     this.signal.refresh();
+    // An encryption on this device runs its own sync cycles; a vault that
+    // became encrypted elsewhere waits for its passphrase. Neither is helped
+    // by a sync started from outside.
+    if (this.settings.encryption) {
+      if (!quiet) new Notice("Syncian: this vault is being encrypted — see Settings → Syncian.");
+      return;
+    }
+    if (this.settings.needsPassphrase) {
+      if (!quiet) new Notice("Syncian: this vault is now end-to-end encrypted — enter its passphrase in Settings → Syncian.");
+      this.setStatus("passphrase needed");
+      return;
+    }
     // Auto-sync is held when the user paused, when we're waiting on a storage
     // payment (quota_exceeded), and when the account has no active plan
     // (payment_required). Either way, only an explicit "Sync now" gets past
@@ -308,6 +340,19 @@ export default class ObsyncPlugin extends Plugin {
           10_000
         );
       }
+      if (report?.vaultReplaced) {
+        await this.encryption.follow(report.vaultReplaced);
+        return;
+      }
+      if (report?.vaultFrozen) {
+        if (!quiet || !this.frozenNotified) {
+          new Notice("Syncian: this vault is being encrypted on another device. Your changes here will sync once that's done.", 10_000);
+        }
+        this.frozenNotified = true;
+        this.setStatus("waiting — vault being encrypted elsewhere");
+      } else if (report) {
+        this.frozenNotified = false;
+      }
       const held = report?.heldDeletions ?? 0;
       if (held && (!quiet || held !== this.heldDeletionsNotified)) {
         new Notice(
@@ -330,7 +375,7 @@ export default class ObsyncPlugin extends Plugin {
     } catch (e) {
       this.pendingSyncErrorStreak++;
       console.error("[obsync] sync failed:", e);
-      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false };
+      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false, vaultFrozen: false, vaultReplaced: null };
       this.lastReportAt = Date.now();
       this.reportError("sync failed", String(e));
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
@@ -348,6 +393,37 @@ export default class ObsyncPlugin extends Plugin {
         }
       }
     }
+  }
+
+  // ---- encrypting a vault / changing its passphrase ----------------------
+  //
+  // Both copy the vault into a new one under a new key (see encrypt.ts and
+  // the server's StartVaultEncryption): start → catch up → copy → switch this
+  // device over → finish (the server deletes the old vault and redirects the
+  // other devices). Every step is recorded in settings.encryption, so a
+  // restart resumes rather than starting over.
+
+  encryption!: VaultEncryption;
+
+  encryptVault(passphrase: string): Promise<void> {
+    return this.encryption.encrypt(passphrase);
+  }
+
+  resumeEncryption(): Promise<void> {
+    new Notice("Syncian: resuming the vault encryption.");
+    return this.encryption.resume();
+  }
+
+  cancelEncryption(): Promise<void> {
+    return this.encryption.cancel();
+  }
+
+  get encryptionRunningNow(): boolean {
+    return this.encryption.running;
+  }
+
+  enterPassphrase(passphrase: string): Promise<void> {
+    return this.encryption.enterPassphrase(passphrase);
   }
 
   // The user's answer to a held mass deletion — see SyncEngine.push.

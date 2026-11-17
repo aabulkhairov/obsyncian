@@ -81,6 +81,25 @@ export class ObsyncStatusView extends ItemView {
       });
     }
 
+    if (s.needsPassphrase && !busy) {
+      const banner = el.createDiv({ cls: "obsync-errors" });
+      banner.createDiv({ cls: "obsync-errors-title", text: "Passphrase needed" });
+      banner.createDiv({
+        cls: "obsync-error-line",
+        text: "This vault is now end-to-end encrypted. Enter its passphrase in Settings → Syncian to keep syncing.",
+      });
+    }
+    if (s.encryption) {
+      const job = s.encryption;
+      const banner = el.createDiv({ cls: "obsync-errors" });
+      banner.createDiv({ cls: "obsync-errors-title", text: "Encrypting this vault" });
+      banner.createDiv({
+        cls: "obsync-error-line",
+        text: (job.total ? `${job.done} of ${job.total} files copied. ` : "") +
+          (job.error ? `Paused: ${job.error} Resume it in Settings → Syncian.` : "Keep Obsidian open until it's done."),
+      });
+    }
+
     const stats = el.createDiv({ cls: "obsync-stats" });
     addRow(stats, "Vault", s.vaultName || "—");
     addRow(stats, "Last sync", ss.lastSyncAt ? relativeTime(ss.lastSyncAt) : "never");

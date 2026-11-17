@@ -7,6 +7,8 @@ export interface VaultInfo {
   key_check: string | null;
   role?: "owner" | "shared";
   owner_identity?: string | null;
+  // Being copied into an encrypted vault right now (frozen for writes).
+  encrypting?: boolean;
 }
 
 // Shared vaults are labeled with their owner so two people's "Notes"
@@ -66,7 +68,10 @@ export class ApiError extends Error {
     message: string,
     // Extra fields some errors carry next to code/message — publish's
     // missing_uploads lists the digests that never reached storage.
-    public details: Record<string, unknown> = {}
+    public details: Record<string, unknown> = {},
+    // The whole parsed error response, for codes that carry more than a
+    // message (vault_replaced names the vault that replaced this one).
+    public body?: unknown
   ) {
     super(message);
   }
@@ -257,6 +262,21 @@ export class ApiClient {
     return this.req("GET", `/v1/vaults/${vaultId}/changes?since=${since}${extra}`);
   }
 
+  // Encrypting a vault or changing its passphrase (see encrypt.ts): start
+  // returns the empty encrypted vault to copy into; finish switches over to
+  // it and deletes the source; cancel deletes the copy instead.
+  startEncryption(vaultId: string, keyCheck: string): Promise<{ vault: VaultInfo }> {
+    return this.req("POST", `/v1/vaults/${vaultId}/encryption`, { key_check: keyCheck });
+  }
+
+  finishEncryption(vaultId: string): Promise<{ vault: VaultInfo }> {
+    return this.req("POST", `/v1/vaults/${vaultId}/encryption/finish`, {}, true, BATCH_TIMEOUT_MS);
+  }
+
+  cancelEncryption(vaultId: string): Promise<void> {
+    return this.req("DELETE", `/v1/vaults/${vaultId}/encryption`);
+  }
+
   presignUpload(vaultId: string, size: number): Promise<{ blob_key: string; put_url: string }> {
     return this.req("POST", `/v1/vaults/${vaultId}/uploads`, { size });
   }
@@ -357,8 +377,9 @@ export class ApiClient {
       let code = "http_error";
       let message = `HTTP ${res.status}`;
       let details: Record<string, unknown> = {};
+      let parsed: { error?: { code?: string; message?: string } & Record<string, unknown> } | undefined;
       try {
-        const parsed = res.json as { error?: { code?: string; message?: string } & Record<string, unknown> } | undefined;
+        parsed = res.json as typeof parsed;
         const err = parsed?.error;
         if (err) {
           const { code: c, message: m, ...rest } = err;
@@ -369,7 +390,7 @@ export class ApiClient {
       } catch {
         // non-JSON error body
       }
-      throw new ApiError(res.status, code, message, details);
+      throw new ApiError(res.status, code, message, details, parsed);
     }
     try {
       return res.json as T;
