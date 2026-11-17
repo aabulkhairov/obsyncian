@@ -24,6 +24,7 @@ interface PersistedData {
 // consecutive error up to the cap; a single clean cycle resets it.
 const PENDING_BACKOFF_BASE_MS = 2_000;
 const PENDING_BACKOFF_MAX_MS = 60_000;
+const WAKE_SYNC_AFTER_MS = 60_000;
 const LAST_SYNC_SAVE_EVERY_MS = 10 * 60_000;
 
 export default class ObsyncPlugin extends Plugin {
@@ -177,6 +178,16 @@ export default class ObsyncPlugin extends Plugin {
       this.registerInterval(
         window.setInterval(() => void this.syncNow(true), this.settings.syncIntervalSeconds * 1000)
       );
+      // Back online, or back from sleep / the background: finish what a lost
+      // connection interrupted right away instead of at the next timer tick.
+      // Coming back to the window alone only syncs if it's been a while.
+      this.registerDomEvent(window, "online", () => void this.syncNow(true));
+      this.registerDomEvent(document, "visibilitychange", () => {
+        if (document.visibilityState !== "visible") return;
+        const unfinished = this.lastReport?.interrupted || this.lastReport?.offline;
+        const stale = Date.now() - (this.lastReportAt ?? 0) > WAKE_SYNC_AFTER_MS;
+        if (unfinished || stale) void this.syncNow(true);
+      });
     });
   }
 
@@ -249,12 +260,16 @@ export default class ObsyncPlugin extends Plugin {
         this.lastReport = report;
         this.lastReportAt = Date.now();
       }
+      // A lost connection isn't a failure to back off from: the next attempt
+      // comes when the device is back online (see the "online" listener).
       this.pendingSyncErrorStreak = report?.errors.length ? this.pendingSyncErrorStreak + 1 : 0;
       if (!quiet && report) {
-        new Notice(`Syncian: ↓${report.pulled} ↑${report.pushed}` +
+        if (report.offline) new Notice("Syncian: no connection — will sync as soon as it's back.");
+        else new Notice(`Syncian: ↓${report.pulled} ↑${report.pushed}` +
           (report.renamed ? `, ${report.renamed} renamed` : "") +
           (report.merged ? `, ${report.merged} merged` : "") +
           (report.conflicts ? `, ${report.conflicts} conflict(s)` : "") +
+          (report.interrupted ? `, ${report.interrupted} to finish when the connection is back` : "") +
           (report.errors.length ? `, ${report.errors.length} error(s) — see console` : ""));
       }
       if (report?.errors.length) {
@@ -301,7 +316,7 @@ export default class ObsyncPlugin extends Plugin {
     } catch (e) {
       this.pendingSyncErrorStreak++;
       console.error("[obsync] sync failed:", e);
-      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0 };
+      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false };
       this.lastReportAt = Date.now();
       this.reportError("sync failed", String(e));
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);

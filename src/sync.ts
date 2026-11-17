@@ -1,5 +1,5 @@
 import { App, Notice, TFile, normalizePath } from "obsidian";
-import { ApiClient, ApiError, ChangeRecord, CommitPayload } from "./api";
+import { ApiClient, ApiError, ChangeRecord, CommitPayload, isConnectionLoss } from "./api";
 import { BaseStore } from "./basestore";
 import { ConfigStore } from "./configstore";
 import { Codec } from "./codec";
@@ -110,6 +110,12 @@ export interface SyncReport {
   // server because there are suspiciously many of them — see the guard in
   // push(). 0 when nothing is held.
   heldDeletions: number;
+  // Transfers cut short because the connection went away (the device slept,
+  // the network dropped). Not errors: each is picked up again on the next
+  // sync, which the plugin starts as soon as the device is back online.
+  interrupted: number;
+  // The whole cycle couldn't reach the server at all.
+  offline: boolean;
 }
 
 // How overlapping edits (same lines changed on two devices) are resolved:
@@ -292,6 +298,8 @@ export class SyncEngine {
   // Revisions this device committed itself. The change signal announces
   // every commit to every device, the committer included.
   private ownRevisions = new Set<number>();
+  // Downloads this cycle that a lost connection cut off (see applyTracked).
+  private interruptedIds = new Set<string>();
   // What the engine itself did to the vault, so the plugin can tell its own
   // writes from the user's when a file event fires. path -> resulting mtime,
   // or null for "we removed it / moved it away".
@@ -353,7 +361,8 @@ export class SyncEngine {
   async sync(): Promise<SyncReport | null> {
     if (this.running) return null;
     this.running = true;
-    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], reportable: [], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0 };
+    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], reportable: [], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false };
+    this.interruptedIds.clear();
     const decision = this.heldDecision;
     this.heldDecision = null;
     this.confirmedMassDelete = decision === "delete";
@@ -381,6 +390,7 @@ export class SyncEngine {
       this.running = false;
       this.cb.onStatus(
         report.errors.length ? `errors (${report.errors.length})`
+          : report.interrupted ? `connection lost — ${report.interrupted} to finish next sync`
           : report.heldDeletions ? `${report.heldDeletions} deletions on hold`
           : `synced ${at}`
       );
@@ -394,6 +404,14 @@ export class SyncEngine {
         report.paymentRequired = true;
         this.running = false;
         this.cb.onStatus("plan required — paused");
+        return report;
+      }
+      // No connection at all: same as a transfer cut short, for the whole
+      // cycle. Nothing is wrong; the plugin tries again once it's back.
+      if (isConnectionLoss(e)) {
+        report.offline = true;
+        this.running = false;
+        this.cb.onStatus("offline — will sync when the connection is back");
         return report;
       }
       recordError(report, String(e));
@@ -481,7 +499,10 @@ export class SyncEngine {
       }
       const pending = (this.state.pending ??= {});
       const prev = pending[change.file_id];
-      const attempts = prev && prev.change.version === change.version ? prev.attempts + 1 : 1;
+      const same = prev && prev.change.version === change.version;
+      // A download cut off by a lost connection says nothing about the file:
+      // it doesn't count towards the backoff, and is due again at once.
+      const attempts = this.interruptedIds.has(change.file_id) ? (same ? prev.attempts : 0) : same ? prev.attempts + 1 : 1;
       const delay = attempts < 2 ? 0 : Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempts - 2));
       pending[change.file_id] = { change, attempts, nextAt: Date.now() + delay };
     }
@@ -625,13 +646,27 @@ export class SyncEngine {
       let item: [string, string] | undefined;
       while ((item = queue.pop())) {
         const [fileId, url] = item;
+        if (offline) {
+          // The connection is gone: don't start the rest only to watch each
+          // fail. They're retried with everything else on the next sync.
+          this.interruptedIds.add(fileId);
+          report.interrupted++;
+          continue;
+        }
         try {
           blobs.set(fileId, await this.api.getBlob(url, sizes.get(fileId)));
         } catch (e) {
-          recordError(report, `download ${fileId}: ${e}`);
+          if (isConnectionLoss(e)) {
+            offline = true;
+            this.interruptedIds.add(fileId);
+            report.interrupted++;
+          } else {
+            recordError(report, `download ${fileId}: ${e}`);
+          }
         }
       }
     };
+    let offline = false;
     await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, queue.length) }, worker));
     return blobs;
   }
@@ -1266,7 +1301,12 @@ export class SyncEngine {
 
   private pushFailed(run: PushRun, job: PushJob, e: unknown): void {
     const report = run.report;
-    if (e instanceof ApiError && (e.code === "version_conflict" || e.code === "path_taken")) {
+    if (isConnectionLoss(e)) {
+      // The connection went away. Stop starting new uploads (and skip the
+      // deletion pass); this file is simply still changed on the next sync.
+      run.halted = true;
+      report.interrupted++;
+    } else if (e instanceof ApiError && (e.code === "version_conflict" || e.code === "path_taken")) {
       // Another device won the race — to this file, or to a new file at
       // this path. The next cycle pulls theirs, merges, then re-pushes.
       report.deferred.push(job.path);
@@ -1351,7 +1391,8 @@ export class SyncEngine {
         const [fileId, entry] = chunk[i];
         const result = results[i];
         if ("err" in result) {
-          recordError(report, `delete ${entry.path}: ${result.err}`, entry.path);
+          if (isConnectionLoss(result.err)) report.interrupted++;
+          else recordError(report, `delete ${entry.path}: ${result.err}`, entry.path);
           continue;
         }
         delete this.state.files[fileId];

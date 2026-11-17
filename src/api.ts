@@ -92,6 +92,23 @@ function blobTimeout(bytes: number): number {
 
 export type BatchItemError = { error: { code: string; message: string } };
 
+// The connection itself went away mid-request — the device slept, Wi-Fi
+// dropped, the network changed — as opposed to the server answering with an
+// error. Nothing about the file or the vault is wrong; the same request will
+// work once the device is back online, so callers treat it as "not yet"
+// rather than as a failure. (Chromium reports these as net::ERR_* messages,
+// Node and other runtimes with their own wording.)
+const CONNECTION_LOSS = new RegExp([
+  "net::ERR_(NETWORK_IO_SUSPENDED|INTERNET_DISCONNECTED|NETWORK_CHANGED|CONNECTION_(RESET|CLOSED|ABORTED|REFUSED|TIMED_OUT|FAILED)",
+  "|NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|ADDRESS_UNREACHABLE|TIMED_OUT|PROXY_CONNECTION_FAILED|SOCKET_NOT_CONNECTED|EMPTY_RESPONSE)",
+  "|Failed to fetch|NetworkError|Network request failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|socket hang up",
+].join(""), "i");
+
+export function isConnectionLoss(e: unknown): boolean {
+  if (e instanceof ApiError) return e.code === "timeout";
+  return CONNECTION_LOSS.test(e instanceof Error ? e.message : String(e));
+}
+
 export function withTimeout<T>(promise: Promise<T>, ms: number, label = ""): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(

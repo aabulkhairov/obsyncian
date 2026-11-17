@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.25",
+    notes: [
+      "### 📶 Calmer about lost connections",
+      "If your device sleeps or the network drops in the middle of a sync, Syncian no longer shows a list of red errors. It notes what's left to transfer and finishes it as soon as you're back online — or back from sleep — instead of waiting for the next sync interval.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.24",
     notes: [
       "### 🛠️ Under-the-hood update",

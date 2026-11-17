@@ -1611,3 +1611,101 @@ describe("error reports never carry file names", () => {
     expect(report?.deferred).toEqual(["n.md"]);
   });
 });
+
+describe("a lost connection", () => {
+  const suspended = () => new Error("net::ERR_NETWORK_IO_SUSPENDED");
+
+  it("is told apart from real errors", async () => {
+    const { isConnectionLoss, ApiError } = await import("../src/api");
+    for (const msg of ["net::ERR_NETWORK_IO_SUSPENDED", "net::ERR_INTERNET_DISCONNECTED", "net::ERR_CONNECTION_RESET", "Failed to fetch", "getaddrinfo ENOTFOUND obsyncian.com"]) {
+      expect(isConnectionLoss(new Error(msg))).toBe(true);
+    }
+    expect(isConnectionLoss(new ApiError(0, "timeout", "No response after 10s"))).toBe(true);
+    expect(isConnectionLoss(new ApiError(500, "http_error", "HTTP 500"))).toBe(false);
+    expect(isConnectionLoss(new ApiError(403, "blob_get_failed", "Blob download failed: HTTP 403"))).toBe(false);
+    expect(isConnectionLoss(new Error("Not an Obsyncian-encrypted blob (bad magic)."))).toBe(false);
+  });
+
+  it("mid-download: no errors, no further downloads started, and everything arrives on the next sync", async () => {
+    const { server, a, b } = setup();
+    for (let i = 0; i < 12; i++) a.vault.write(`n${i}.md`, `note ${i}`);
+    await a.engine.sync();
+
+    const real = server.getBlob.bind(server);
+    let calls = 0;
+    server.getBlob = async (url: string) => {
+      if (++calls === 3) throw suspended();
+      return real(url);
+    };
+    const cut = await b.engine.sync();
+    expect(cut?.errors).toEqual([]);
+    expect(cut?.reportable).toEqual([]);
+    // Every file is either here or counted as interrupted; once the
+    // connection was gone, the queued downloads weren't even started.
+    const got = Object.keys(b.vault.snapshot()).length;
+    expect(got + cut!.interrupted).toBe(12);
+    expect(cut!.interrupted).toBeGreaterThan(1);
+    expect(calls).toBeLessThan(12);
+
+    server.getBlob = real;
+    const healed = await b.engine.sync();
+    expect([healed?.errors.length, healed?.interrupted]).toEqual([0, 0]);
+    expect(b.vault.snapshot()).toEqual(a.vault.snapshot());
+  });
+
+  it("doesn't push a file's retries into backoff, however often it's cut off", async () => {
+    const { server, a, b } = setup();
+    a.vault.write("n.md", "x");
+    await a.engine.sync();
+    const real = server.getBlob.bind(server);
+    server.getBlob = async () => { throw suspended(); };
+    for (let i = 0; i < 4; i++) expect((await b.engine.sync())?.interrupted).toBe(1);
+    server.getBlob = real;
+    await b.engine.sync();
+    expect(b.vault.read("n.md")).toBe("x");
+  });
+
+  it("mid-upload: stops uploading, deletes nothing, and finishes on the next sync", async () => {
+    const { server, a, b } = setup();
+    for (let i = 0; i < 6; i++) a.vault.write(`n${i}.md`, `note ${i}`);
+    await a.engine.sync();
+    a.vault.write("n0.md", "edited");
+    a.vault.write("new.md", "new");
+    a.vault.delete("n5.md");
+
+    const real = server.putBlob.bind(server);
+    server.putBlob = async () => { throw suspended(); };
+    const cut = await a.engine.sync();
+    expect(cut?.errors).toEqual([]);
+    expect(cut?.interrupted).toBeGreaterThan(0);
+    expect(cut?.deletedRemote).toBe(0);
+
+    server.putBlob = real;
+    const healed = await a.engine.sync();
+    expect([healed?.errors.length, healed?.deletedRemote]).toEqual([0, 1]);
+    await b.engine.sync();
+    expect(b.vault.snapshot()).toEqual(a.vault.snapshot());
+  });
+
+  it("with no connection at all: the cycle ends quietly as offline instead of failing", async () => {
+    const { server, a } = setup();
+    const real = server.changes.bind(server);
+    server.changes = async () => { throw new Error("net::ERR_INTERNET_DISCONNECTED"); };
+    const report = await a.engine.sync();
+    expect(report?.offline).toBe(true);
+    expect(report?.errors).toEqual([]);
+    server.changes = real;
+    a.vault.write("n.md", "x");
+    expect((await a.engine.sync())?.pushed).toBe(1);
+  });
+
+  it("a real error is still an error", async () => {
+    const { server, a, b } = setup();
+    a.vault.write("n.md", "x");
+    await a.engine.sync();
+    server.getBlob = async () => { throw new Error("Blob download failed: HTTP 403"); };
+    const report = await b.engine.sync();
+    expect(report?.errors.length).toBe(1);
+    expect(report?.interrupted).toBe(0);
+  });
+});
