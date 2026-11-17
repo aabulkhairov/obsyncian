@@ -30,6 +30,15 @@ export interface ObsyncSettings {
   reportErrors: boolean;
   syncPlugins: boolean;
   showReleaseNotes: boolean;
+  // Failed attempts to reach the server, summed up into one report a day —
+  // see connectivity.ts.
+  connectivity: ConnectivityTally | null;
+}
+
+export interface ConnectivityTally {
+  since: number; // epoch ms of the first failure in this tally
+  failures: number;
+  last: string;
 }
 
 export const MIN_SYNC_INTERVAL_S = 15;
@@ -58,6 +67,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   reportErrors: true,
   syncPlugins: false,
   showReleaseNotes: true,
+  connectivity: null,
 };
 
 // The bot hands out codes as "<user prefix>-<6 digits>" ("K3-482910"); the

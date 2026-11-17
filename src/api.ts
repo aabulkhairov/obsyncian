@@ -147,7 +147,7 @@ export class ApiClient {
     return this.req("POST", "/v1/auth/telegram/verify", { code, device_name: deviceName }, false);
   }
 
-  me(): Promise<{ email: string; storage_used: number; storage_limit: number }> {
+  me(): Promise<{ email: string; plan: string; storage_used: number; storage_limit: number; sync_entitled?: boolean }> {
     return this.req("GET", "/v1/me");
   }
 

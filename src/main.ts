@@ -6,6 +6,7 @@ import { Codec, PlainCodec } from "./codec";
 import { CryptoCodec, unlock } from "./crypto";
 import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, clampSyncInterval, parseExcludes } from "./settings";
 import { ChangeSignal, LocalChanges } from "./signal";
+import { hostOf, noteConnectivity } from "./connectivity";
 import { SyncEngine, SyncReport, SyncState, adoptVaultState, emptySyncState } from "./sync";
 import { ObsyncStatusView, VIEW_TYPE_OBSYNC } from "./view";
 import { WhatsNewModal, compareVersions, notesFor, notesSince } from "./whatsnew";
@@ -25,6 +26,7 @@ interface PersistedData {
 const PENDING_BACKOFF_BASE_MS = 2_000;
 const PENDING_BACKOFF_MAX_MS = 60_000;
 const WAKE_SYNC_AFTER_MS = 60_000;
+const PLAN_CHECK_EVERY_MS = 15 * 60_000;
 const LAST_SYNC_SAVE_EVERY_MS = 10 * 60_000;
 
 export default class ObsyncPlugin extends Plugin {
@@ -182,6 +184,9 @@ export default class ObsyncPlugin extends Plugin {
       // connection interrupted right away instead of at the next timer tick.
       // Coming back to the window alone only syncs if it's been a while.
       this.registerDomEvent(window, "online", () => void this.syncNow(true));
+      // Paused for lack of a plan: look every so often whether one has been
+      // bought, and carry on by itself — not only after "Sync now".
+      this.registerInterval(window.setInterval(() => void this.resumeIfPaid(), PLAN_CHECK_EVERY_MS));
       this.registerDomEvent(document, "visibilitychange", () => {
         if (document.visibilityState !== "visible") return;
         const unfinished = this.lastReport?.interrupted || this.lastReport?.offline;
@@ -272,6 +277,15 @@ export default class ObsyncPlugin extends Plugin {
           (report.interrupted ? `, ${report.interrupted} to finish when the connection is back` : "") +
           (report.errors.length ? `, ${report.errors.length} error(s) — see console` : ""));
       }
+      if (report?.signedOut) {
+        await this.signedOut();
+        return;
+      }
+      if (report) {
+        const due = noteConnectivity(this.settings, report, Date.now(), hostOf(this.settings.serverUrl));
+        if (due) this.reportError("connectivity", due);
+        await this.savePersisted();
+      }
       if (report?.errors.length) {
         console.warn("[obsync] sync errors:", report.errors);
         this.reportError("sync", report.reportable.slice(0, 5).join("\n"));
@@ -316,7 +330,7 @@ export default class ObsyncPlugin extends Plugin {
     } catch (e) {
       this.pendingSyncErrorStreak++;
       console.error("[obsync] sync failed:", e);
-      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false };
+      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false };
       this.lastReportAt = Date.now();
       this.reportError("sync failed", String(e));
       if (!quiet) new Notice(`Syncian: sync failed — ${e}`);
@@ -340,6 +354,43 @@ export default class ObsyncPlugin extends Plugin {
   resolveHeldDeletions(decision: "delete" | "restore") {
     this.engine.resolveHeldDeletions(decision);
     void this.syncNow();
+  }
+
+  async resumeIfPaid(): Promise<void> {
+    if (!this.connected || !this.settings.paymentBlocked) return;
+    try {
+      const me = await this.api.me();
+      // Servers before sync_entitled existed: any paid plan.
+      const entitled = me.sync_entitled ?? me.plan !== "free";
+      if (!entitled) return;
+    } catch {
+      return; // offline, or the server's busy: the next check will do
+    }
+    this.settings.paymentBlocked = false;
+    await this.savePersisted();
+    new Notice("Syncian: your plan is active — sync resumed.");
+    void this.syncNow(true);
+  }
+
+  // The server stopped accepting this device's login. Log out the same way
+  // the Log out button does — the index stays, so logging back in and
+  // linking the same vault picks up where it left off — and say so once,
+  // instead of failing (and reporting the failure) every few minutes.
+  private async signedOut(): Promise<void> {
+    this.signal.stop();
+    this.settings.apiToken = "";
+    this.settings.identity = "";
+    this.settings.vaultId = "";
+    this.settings.vaultName = "";
+    this.settings.vaultKeyCheck = "";
+    this.invalidateCodec();
+    await this.savePersisted();
+    this.setStatus("signed out — log in again");
+    this.refreshViews();
+    new Notice(
+      "Syncian: this device was signed out of your Obsyncian account. Log in again in Settings → Syncian and pick your vault — sync carries on where it left off.",
+      0
+    );
   }
 
   // Opt-out, on by default. Fire-and-forget: never awaited by a caller,

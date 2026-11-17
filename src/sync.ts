@@ -114,8 +114,14 @@ export interface SyncReport {
   // the network dropped). Not errors: each is picked up again on the next
   // sync, which the plugin starts as soon as the device is back online.
   interrupted: number;
-  // The whole cycle couldn't reach the server at all.
+  // The whole cycle couldn't reach the server at all; why, as the error said
+  // it (never contains file names: it's from the first request of a cycle).
   offline: boolean;
+  offlineReason?: string;
+  // The server no longer accepts this device's login (401): it was signed
+  // out — e.g. by another device logging in under the same name. Retrying
+  // can't help; the plugin asks the user to log in again.
+  signedOut: boolean;
 }
 
 // How overlapping edits (same lines changed on two devices) are resolved:
@@ -361,7 +367,7 @@ export class SyncEngine {
   async sync(): Promise<SyncReport | null> {
     if (this.running) return null;
     this.running = true;
-    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], reportable: [], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false };
+    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], reportable: [], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false };
     this.interruptedIds.clear();
     const decision = this.heldDecision;
     this.heldDecision = null;
@@ -408,8 +414,15 @@ export class SyncEngine {
       }
       // No connection at all: same as a transfer cut short, for the whole
       // cycle. Nothing is wrong; the plugin tries again once it's back.
+      if (e instanceof ApiError && e.status === 401) {
+        report.signedOut = true;
+        this.running = false;
+        this.cb.onStatus("signed out — log in again");
+        return report;
+      }
       if (isConnectionLoss(e)) {
         report.offline = true;
+        report.offlineReason = e instanceof Error ? e.message : String(e);
         this.running = false;
         this.cb.onStatus("offline — will sync when the connection is back");
         return report;

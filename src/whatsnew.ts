@@ -10,6 +10,16 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.26",
+    notes: [
+      "### ▶️ Sync resumes by itself after you pay",
+      "If sync was paused because your account had no active plan, Syncian now notices when you've picked one and carries on by itself — no need to find the “Sync now” button.",
+      "",
+      "### 🔑 Clear message when you're signed out",
+      "If this device gets signed out of your account, Syncian now says so once and asks you to log in again, instead of quietly failing every few minutes. Logging back in and picking your vault carries on where you left off.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.25",
     notes: [
       "### 📶 Calmer about lost connections",

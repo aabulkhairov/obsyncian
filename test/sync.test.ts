@@ -1709,3 +1709,14 @@ describe("a lost connection", () => {
     expect(report?.interrupted).toBe(0);
   });
 });
+
+describe("signed out", () => {
+  it("a revoked login ends the cycle as signed out, not as an error to retry", async () => {
+    const { server, a } = setup();
+    const { ApiError } = await import("../src/api");
+    server.changes = async () => { throw new ApiError(401, "unauthorized", "Invalid or missing token."); };
+    const report = await a.engine.sync();
+    expect(report?.signedOut).toBe(true);
+    expect(report?.errors).toEqual([]);
+  });
+});
