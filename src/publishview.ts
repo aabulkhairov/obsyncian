@@ -193,6 +193,7 @@ export class PublishSettingsSection {
     const published = !!site.last_published_at;
     const facts = [
       statusLabel(site),
+      site.visibility === "gated" ? "Private" : "",
       published ? `${site.page_count} page${site.page_count === 1 ? "" : "s"}, ${formatBytes(site.total_bytes)}` : "",
       published ? `updated ${relativeDate(site.last_published_at)}` : "",
     ].filter(Boolean);
@@ -202,6 +203,13 @@ export class PublishSettingsSection {
         f.createEl("a", { text: site.url, href: site.url });
         f.createEl("br");
         f.appendText(facts.join(" · "));
+        if (site.visibility === "gated" && site.access) {
+          f.createEl("br");
+          const { pending, approved, manage_url } = site.access;
+          const waiting = pending ? `${pending} new request${pending === 1 ? "" : "s"}` : "No new requests";
+          f.appendText(`${waiting} · ${approved} reader${approved === 1 ? "" : "s"} approved · `);
+          f.createEl("a", { text: "Manage access ↗", href: manage_url });
+        }
       })
     );
     head.settingEl.addClass("obsync-publish-site");
@@ -336,7 +344,7 @@ function askConsent(plugin: ObsyncPlugin, site: PublishSiteInfo, manifest: Publi
 // allowed but warned about: every shared link to the old address stops
 // working.
 class SiteFormModal extends Modal {
-  private params: Required<Pick<PublishSiteParams, "slug" | "title" | "author_label" | "locale">>;
+  private params: Required<Pick<PublishSiteParams, "slug" | "title" | "author_label" | "locale" | "visibility">>;
 
   constructor(
     app: App,
@@ -350,6 +358,7 @@ class SiteFormModal extends Modal {
       title: site?.title ?? vaultName,
       author_label: site?.author_label ?? "",
       locale: site?.locale ?? "en",
+      visibility: site?.visibility ?? "public",
     };
   }
 
@@ -383,6 +392,26 @@ class SiteFormModal extends Modal {
     new Setting(contentEl).setName("Site language").setDesc("Language of the site's own labels (navigation, dates).").addDropdown((dd) =>
       dd.addOption("en", "English").addOption("ru", "Русский").setValue(this.params.locale).onChange((v) => (this.params.locale = v as "en" | "ru"))
     );
+
+    const privateSetting = new Setting(contentEl).setName("Private");
+    const updatePrivateDesc = () => {
+      const wasPrivate = this.site?.visibility === "gated" && !!this.site.last_published_at;
+      privateSetting.setDesc(
+        this.params.visibility === "gated"
+          ? "Only readers you approve can read it. Everyone else sees a sign-in page with a Request access button; " +
+              "you approve in Telegram or on obsyncian.com. Never indexed by search engines."
+          : wasPrivate
+            ? "Off: the published notes become readable by anyone with the link."
+            : "Off: anyone with the link can read the site."
+      );
+    };
+    privateSetting.addToggle((t) =>
+      t.setValue(this.params.visibility === "gated").onChange((on) => {
+        this.params.visibility = on ? "gated" : "public";
+        updatePrivateDesc();
+      })
+    );
+    updatePrivateDesc();
 
     new Setting(contentEl).addButton((btn) =>
       btn.setButtonText(this.site ? "Save" : "Create site").setCta().onClick(async () => {
@@ -624,7 +653,8 @@ export class ConsentModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     const f = this.facts;
-    this.titleEl.setText(f.grown ? "Publish more notes?" : "Make these notes public?");
+    const priv = f.site.visibility === "gated";
+    this.titleEl.setText(f.grown ? "Publish more notes?" : priv ? "Publish these notes?" : "Make these notes public?");
 
     contentEl.createEl("p", {
       text: `You're about to publish ${f.notes} note${f.notes === 1 ? "" : "s"}` +
@@ -632,7 +662,11 @@ export class ConsentModal extends Modal {
         ` (${formatBytes(f.bytes)}) to ${f.site.url}.`,
     });
     const points = contentEl.createEl("ul");
-    points.createEl("li", { text: "Anyone on the internet can read them, without an account. Search engines may list them." });
+    points.createEl("li", {
+      text: priv
+        ? "The site is private: only people you approve can read them, after signing in. Search engines won't list them. If you make the site public later, anyone with the link can."
+        : "Anyone on the internet can read them, without an account. Search engines may list them.",
+    });
     points.createEl("li", {
       text: f.encrypted
         ? "They leave end-to-end encryption. A readable copy — the text, images, note names and folder paths — is stored on Obsyncian's servers so it can be shown to visitors."
@@ -654,10 +688,12 @@ export class ConsentModal extends Modal {
 
     const label = contentEl.createEl("label", { cls: "obsync-consent-check" });
     const check = label.createEl("input", { type: "checkbox" });
-    label.appendText(" I understand: these notes will be public on the internet.");
+    label.appendText(priv
+      ? " I understand: a readable copy of these notes goes to Obsyncian's servers, for the readers I approve."
+      : " I understand: these notes will be public on the internet.");
 
     const buttons = contentEl.createDiv({ cls: "modal-button-container" });
-    const publish = buttons.createEl("button", { text: f.grown ? "Publish" : "Make public and publish", cls: "mod-cta" });
+    const publish = buttons.createEl("button", { text: f.grown || priv ? "Publish" : "Make public and publish", cls: "mod-cta" });
     publish.disabled = true;
     check.onchange = () => (publish.disabled = !check.checked);
     publish.onclick = () => {

@@ -98,12 +98,16 @@ export interface PublishSiteInfo {
   total_bytes: number;
   url: string;
   last_published_at: string | null;
+  // Private sites only matter here: readers waiting for a yes, readers let
+  // in, and the owner's web page for deciding (absent on older servers).
+  access?: { pending: number; approved: number; manage_url: string };
 }
 
-// What the author can set. `visibility` is left out on purpose: gated sites
-// arrive with the gate (P5), and until then everything this plugin creates
-// is public.
+// What the author can set. visibility "gated" is shown as "Private": only
+// readers the author approves (on obsyncian.com or in the Telegram bot) can
+// read it.
 export interface PublishSiteParams {
+  visibility?: "public" | "gated";
   slug?: string;
   title?: string;
   description?: string;
