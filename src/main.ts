@@ -10,6 +10,7 @@ import { hostOf, noteConnectivity } from "./connectivity";
 import { SyncEngine, SyncReport, SyncState, adoptVaultState, emptySyncState } from "./sync";
 import { VaultEncryption } from "./encrypt";
 import { ObsyncStatusView, VIEW_TYPE_OBSYNC } from "./view";
+import { PUBLISH_ICON, PublishPanelView, VIEW_TYPE_PUBLISH } from "./publishpanel";
 import { WhatsNewModal, compareVersions, notesFor, notesSince } from "./whatsnew";
 
 interface PersistedData {
@@ -146,6 +147,21 @@ export default class ObsyncPlugin extends Plugin {
     this.addRibbonIcon("refresh-cw", "Syncian sync status", () => this.activateView());
     this.addCommand({ id: "open-status", name: "Open sync status", callback: () => this.activateView() });
 
+    // Publish gets its own ribbon button and side panel. Hidden until the
+    // server confirms Publish is open to this account (private beta).
+    this.registerView(VIEW_TYPE_PUBLISH, (leaf) => new PublishPanelView(leaf, this));
+    this.publishRibbonEl = this.addRibbonIcon(PUBLISH_ICON, "Syncian Publish", () => void this.activatePublishView());
+    this.publishRibbonEl.hide();
+    this.addCommand({
+      id: "open-publish",
+      name: "Open Publish",
+      checkCallback: (checking) => {
+        if (!this.publishAvailable) return false;
+        if (!checking) void this.activatePublishView();
+        return true;
+      },
+    });
+
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => this.syncNow() });
     this.addCommand({ id: "confirm-deletions", name: "Confirm held deletions", callback: () => this.resolveHeldDeletions("delete") });
     this.addCommand({ id: "restore-missing", name: "Restore missing files from the server", callback: () => this.resolveHeldDeletions("restore") });
@@ -171,6 +187,7 @@ export default class ObsyncPlugin extends Plugin {
     }, 5_000, true);
     this.app.workspace.onLayoutReady(() => {
       void this.maybeShowWhatsNew();
+      void this.checkPublishAvailable();
       void this.gcBaseStore();
       if (this.settings.encryption) void this.resumeEncryption();
       else void this.syncNow(true);
@@ -508,6 +525,42 @@ export default class ObsyncPlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OBSYNC)) {
       if (leaf.view instanceof ObsyncStatusView) leaf.view.render();
     }
+  }
+
+  publishRibbonEl: HTMLElement | null = null;
+  publishAvailable = false;
+
+  // One cheap call per session: Publish is a private beta, and the server
+  // answers publish_not_available to accounts it isn't open to. Also re-run
+  // after logging in or switching vaults.
+  async checkPublishAvailable(): Promise<void> {
+    if (!this.settings.apiToken) return this.setPublishAvailable(false);
+    try {
+      await this.api.listPublishSites();
+      this.setPublishAvailable(true);
+    } catch (e) {
+      if (e instanceof ApiError && (e.code === "publish_not_available" || e.status === 401)) this.setPublishAvailable(false);
+    }
+  }
+
+  setPublishAvailable(available: boolean): void {
+    if (available === this.publishAvailable && this.publishRibbonEl?.isShown() === available) return;
+    this.publishAvailable = available;
+    this.publishRibbonEl?.toggle(available);
+    if (!available) this.app.workspace.detachLeavesOfType(VIEW_TYPE_PUBLISH);
+  }
+
+  async activatePublishView() {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_PUBLISH);
+    if (existing.length) {
+      const view = existing[0].view;
+      if (view instanceof PublishPanelView) view.refresh();
+      await this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    await leaf?.setViewState({ type: VIEW_TYPE_PUBLISH, active: true });
+    if (leaf) await this.app.workspace.revealLeaf(leaf);
   }
 
   async activateView() {

@@ -107,6 +107,13 @@ export class PublishSettingsSection {
     this.started = false;
   }
 
+  // For the Publish side panel, which has to say something while the section
+  // itself paints nothing (still loading, or Publish not on this account).
+  get availability(): "loading" | "hidden" | "ready" {
+    if (this.state === null) return "loading";
+    return "hidden" in this.state ? "hidden" : "ready";
+  }
+
   // Nothing at all until the server has answered: Publish is a private beta
   // (the server answers publish_not_available to everyone else), so the
   // section must not flash up for an account that will never see it.
@@ -168,8 +175,11 @@ export class PublishSettingsSection {
     try {
       const { sites } = await this.plugin.api.listPublishSites();
       this.state = { sites };
+      this.plugin.setPublishAvailable(true);
     } catch (e) {
-      this.state = e instanceof ApiError && e.code === "publish_not_available" ? { hidden: true } : { error: publishErrorMessage(e) };
+      const hidden = e instanceof ApiError && e.code === "publish_not_available";
+      this.state = hidden ? { hidden: true } : { error: publishErrorMessage(e) };
+      if (hidden) this.plugin.setPublishAvailable(false);
     }
     if (this.plugin.settings.apiToken && this.plugin.settings.vaultId) this.rerender();
   }

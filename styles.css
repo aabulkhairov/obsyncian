@@ -273,3 +273,11 @@
   font-size: var(--font-ui-small);
   color: var(--text-muted);
 }
+
+/* Publish side panel (ribbon → Syncian Publish): the settings section in a
+   narrow column, so its rows and button groups wrap instead of overflowing. */
+.obsync-publish-panel { padding: 12px 16px; }
+.obsync-publish-panel .setting-item { flex-wrap: wrap; gap: 8px; }
+.obsync-publish-panel .setting-item-info { flex: 1 1 100%; }
+.obsync-publish-panel .setting-item-control { flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
+.obsync-publish-panel-bar { display: flex; justify-content: flex-end; margin-bottom: -8px; }
