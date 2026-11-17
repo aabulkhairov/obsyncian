@@ -1,5 +1,6 @@
 import { ItemView, WorkspaceLeaf } from "obsidian";
 import type ObsyncPlugin from "./main";
+import { formatBytes } from "./util";
 
 export const VIEW_TYPE_OBSYNC = "obsync-status-view";
 
@@ -174,18 +175,6 @@ function addRow(container: HTMLElement, label: string, value: string): void {
   const row = container.createDiv({ cls: "obsync-stat-row" });
   row.createSpan({ text: label, cls: "obsync-stat-label" });
   row.createSpan({ text: value, cls: "obsync-stat-value" });
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) {
-    value /= 1024;
-    i++;
-  }
-  return `${value.toFixed(1)} ${units[i]}`;
 }
 
 function relativeTime(ts: number): string {

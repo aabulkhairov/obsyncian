@@ -197,3 +197,79 @@
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
 }
+
+/* --- Publish ------------------------------------------------------------ */
+
+.obsync-publish-site {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.obsync-publish-actions {
+  border-top: none;
+  padding-top: 0;
+}
+
+.obsync-publish-actions .setting-item-control {
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+}
+
+.obsync-picker-tree {
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-2) 0;
+  margin-bottom: var(--size-4-2);
+}
+
+.obsync-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  padding: 2px var(--size-4-2) 2px calc(var(--size-4-2) + var(--obsync-depth, 0) * 18px);
+  font-size: var(--font-ui-small);
+}
+
+.obsync-picker-row.is-folder {
+  font-weight: var(--font-medium);
+}
+
+.obsync-picker-caret {
+  width: 1em;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.obsync-picker-row:not(.is-folder) {
+  padding-left: calc(var(--size-4-2) + 1em + var(--size-2-2) + var(--obsync-depth, 0) * 18px);
+}
+
+.obsync-picker-totals {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.obsync-consent-list {
+  max-height: 10em;
+  overflow-y: auto;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.obsync-consent-check {
+  display: block;
+  margin: var(--size-4-3) 0;
+  font-weight: var(--font-medium);
+}
+
+.obsync-publish-progress {
+  width: 100%;
+  margin-top: var(--size-4-2);
+}
+
+.obsync-publish-progress-text {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}

@@ -2,6 +2,8 @@ import { App, Modal, Notice, Platform, PluginSettingTab, Setting } from "obsidia
 import { ApiError, findVaultByName, vaultLabel, type VaultInfo } from "./api";
 import { makeKeyCheck, unlock } from "./crypto";
 import type ObsyncPlugin from "./main";
+import type { PublishSelection } from "./publish";
+import { PublishSettingsSection } from "./publishview";
 import { type ConflictMode } from "./sync";
 
 export interface ObsyncSettings {
@@ -33,6 +35,17 @@ export interface ObsyncSettings {
   // Failed attempts to reach the server, summed up into one report a day —
   // see connectivity.ts.
   connectivity: ConnectivityTally | null;
+  // Obsyncian Publish, per site id: what the site publishes, and what the
+  // author has already agreed to make public. Kept on this device only (the
+  // plugin's own folder never syncs), like everything else in here.
+  publishSites: Record<string, PublishSiteLocal>;
+}
+
+export interface PublishSiteLocal {
+  selection: PublishSelection;
+  // Vault paths (notes and attachments) covered by the last consent — see
+  // newSinceConsent.
+  consented: string[];
 }
 
 export interface ConnectivityTally {
@@ -68,6 +81,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   syncPlugins: false,
   showReleaseNotes: true,
   connectivity: null,
+  publishSites: {},
 };
 
 // The bot hands out codes as "<user prefix>-<6 digits>" ("K3-482910"); the
@@ -131,10 +145,18 @@ export class ObsyncSettingTab extends PluginSettingTab {
   // Also fetched unprompted once logged in: whether the account already has
   // vaults decides which linking path the screen leads with.
   private vaultsFetchStarted = false;
+  private publish: PublishSettingsSection;
 
   constructor(app: App, plugin: ObsyncPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+    this.publish = new PublishSettingsSection(plugin, () => this.display());
+  }
+
+  // Fetched afresh each time Settings opens, so a site created or deleted
+  // elsewhere (another device, the web) shows up.
+  hide(): void {
+    this.publish.reset();
   }
 
   display(): void {
@@ -159,6 +181,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
       this.vaultsState = null;
       this.vaultsFetchStarted = false;
     }
+
+    if (!s.apiToken || !s.vaultId) this.publish.reset();
 
     if (!s.apiToken) {
       this.displayLogin(containerEl);
@@ -319,6 +343,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .addButton((btn) =>
         btn.setButtonText("Sync").setCta().onClick(() => this.plugin.syncNow())
       );
+
+    this.publish.display(containerEl);
   }
 
   private displayLogin(containerEl: HTMLElement): void {

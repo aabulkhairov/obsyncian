@@ -220,7 +220,7 @@ function itemOutcome<I extends object, T>(item: I | { error: { code: string; mes
   return { ok: pick(item) };
 }
 
-async function pool<T>(items: T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
+export async function pool<T>(items: T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
   const worker = async () => {
     while (next < items.length) await work(items[next++]);
@@ -259,7 +259,7 @@ function slicesBySize(changes: ChangeRecord[], limit: number): ChangeRecord[][] 
   return slices;
 }
 
-function progressText(prefix: string, current: number, total: number): string {
+export function progressText(prefix: string, current: number, total: number): string {
   if (total <= 0) return prefix;
   const pct = Math.min(100, Math.round((current / total) * 100));
   const filled = Math.round((PROGRESS_BAR_WIDTH * pct) / 100);

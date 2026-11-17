@@ -63,11 +63,95 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     public code: string,
-    message: string
+    message: string,
+    // Extra fields some errors carry next to code/message — publish's
+    // missing_uploads lists the digests that never reached storage.
+    public details: Record<string, unknown> = {}
   ) {
     super(message);
   }
 }
+
+// --- Obsyncian Publish (server: V1::PublishSitesController & co.) ---------
+
+// PublishSite#as_api_json. Site CRUD and the final commit both answer with
+// it, so there is one shape to parse.
+export interface PublishSiteInfo {
+  id: number;
+  vault_id: number;
+  slug: string;
+  title: string;
+  description: string | null;
+  author_label: string | null;
+  visibility: "public" | "gated";
+  status: "draft" | "live" | "disabled";
+  locale: "en" | "ru";
+  robots: "index" | "noindex";
+  revision: number;
+  page_count: number;
+  object_count: number;
+  total_bytes: number;
+  url: string;
+  last_published_at: string | null;
+}
+
+// What the author can set. `visibility` is left out on purpose: gated sites
+// arrive with the gate (P5), and until then everything this plugin creates
+// is public.
+export interface PublishSiteParams {
+  slug?: string;
+  title?: string;
+  description?: string;
+  author_label?: string;
+  locale?: "en" | "ru";
+  robots?: "index" | "noindex";
+  status?: "draft" | "live";
+}
+
+// One binary object a snapshot needs (PublishPlan#normalize).
+export interface PublishObjectInput {
+  digest: string; // sha256 of the plaintext bytes
+  byte_size: number;
+  content_type: string;
+  kind: "asset";
+  source_path?: string;
+  width?: number;
+  height?: number;
+}
+
+export interface PublishPlanResult {
+  snapshot: string;
+  known: string[];
+  uploads: { digest: string; put_url: string; expires_in: number }[];
+  bytes_remaining: number;
+}
+
+// One page of a snapshot (PublishSnapshot#normalize). `gated` is never sent
+// until P5.
+export interface PublishPageInput {
+  path: string;
+  slug: string;
+  title: string;
+  nav_title?: string;
+  nav_section?: string;
+  position: number;
+  parent_path?: string;
+  excerpt?: string;
+  source_modified_at?: string;
+  content_markdown: string;
+}
+
+export interface PublishCommitBody {
+  snapshot: string;
+  pages: PublishPageInput[];
+  final: boolean;
+  home_path?: string;
+  cover_digest?: string;
+}
+
+export type PublishCommitResult =
+  | { snapshot: string; final: false; staged: number }
+  | (PublishSiteInfo & { published: true });
 
 // Announced on every authenticated request so the server knows what this
 // plugin can receive. 2: handles a change that moves a file and alters its
@@ -78,6 +162,9 @@ const REQUEST_TIMEOUT_MS = 10_000;
 // A batch is up to batch_limit files' worth of work for the server (it checks
 // each upload against storage), so it gets longer than a single call.
 const BATCH_TIMEOUT_MS = 60_000;
+// The final publish commit checks every new upload against storage, one
+// request each, before it swaps the site over.
+const PUBLISH_FINAL_TIMEOUT_MS = 180_000;
 // Blob PUT/GET carry actual file bytes (up to the 250 MB plan cap), so the
 // allowance grows with the size: this much flat, plus time to move the bytes
 // at a slow mobile uplink. A flat cap either cuts off big files on a slow
@@ -192,6 +279,32 @@ export class ApiClient {
     return this.req("POST", `/v1/vaults/${vaultId}/downloads`, { file_ids: fileIds });
   }
 
+  listPublishSites(): Promise<{ sites: PublishSiteInfo[] }> {
+    return this.req("GET", "/v1/publish/sites");
+  }
+
+  createPublishSite(vaultId: string, params: PublishSiteParams): Promise<PublishSiteInfo> {
+    return this.req("POST", "/v1/publish/sites", { vault_id: vaultId, ...params });
+  }
+
+  updatePublishSite(siteId: number, params: PublishSiteParams): Promise<PublishSiteInfo> {
+    return this.req("PATCH", `/v1/publish/sites/${siteId}`, params);
+  }
+
+  deletePublishSite(siteId: number): Promise<void> {
+    return this.req("DELETE", `/v1/publish/sites/${siteId}`);
+  }
+
+  publishPlan(siteId: number, snapshot: string, objects: PublishObjectInput[]): Promise<PublishPlanResult> {
+    return this.req("POST", `/v1/publish/sites/${siteId}/plan`, { snapshot, objects }, true, BATCH_TIMEOUT_MS);
+  }
+
+  // The final call also confirms every new upload against storage before it
+  // promotes, so it gets the longer allowance too.
+  publishCommit(siteId: number, body: PublishCommitBody): Promise<PublishCommitResult> {
+    return this.req("POST", `/v1/publish/sites/${siteId}/commit`, body, true, body.final ? PUBLISH_FINAL_TIMEOUT_MS : BATCH_TIMEOUT_MS);
+  }
+
   reportError(payload: { message: string; context: string; plugin_version: string; platform: string }): Promise<void> {
     return this.req("POST", "/v1/errors", payload);
   }
@@ -206,6 +319,18 @@ export class ApiClient {
       blobTimeout(data.byteLength), "blob upload"
     );
     if (res.status >= 400) throw new ApiError(res.status, "blob_put_failed", `Blob upload failed: HTTP ${res.status}`);
+  }
+
+  // A published object, unlike a sync blob, is served to readers as-is, so it
+  // is stored with its real type: an SVG labelled octet-stream doesn't render
+  // in an <img>, and a PDF would download instead of opening. The presigned
+  // URL signs the length, not the type, so the type is ours to choose.
+  async putPublishObject(url: string, data: ArrayBuffer, contentType: string): Promise<void> {
+    const res = await withTimeout(
+      requestUrl({ url, method: "PUT", contentType, body: data, throw: false }),
+      blobTimeout(data.byteLength), "publish upload"
+    );
+    if (res.status >= 400) throw new ApiError(res.status, "blob_put_failed", `Upload failed: HTTP ${res.status}`);
   }
 
   // `size` (the change's recorded size) only scales the timeout.
@@ -231,17 +356,20 @@ export class ApiClient {
     if (res.status >= 400) {
       let code = "http_error";
       let message = `HTTP ${res.status}`;
+      let details: Record<string, unknown> = {};
       try {
-        const parsed = res.json as { error?: { code?: string; message?: string } } | undefined;
+        const parsed = res.json as { error?: { code?: string; message?: string } & Record<string, unknown> } | undefined;
         const err = parsed?.error;
         if (err) {
-          code = err.code ?? code;
-          message = err.message ?? message;
+          const { code: c, message: m, ...rest } = err;
+          code = c ?? code;
+          message = m ?? message;
+          details = rest;
         }
       } catch {
         // non-JSON error body
       }
-      throw new ApiError(res.status, code, message);
+      throw new ApiError(res.status, code, message, details);
     }
     try {
       return res.json as T;

@@ -492,6 +492,8 @@ export default class ObsyncPlugin extends Plugin {
   async loadPersisted() {
     const data = (await this.loadData()) as Partial<PersistedData> | null;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data?.settings);
+    // A copy, not DEFAULT_SETTINGS' own object, which every load would share.
+    this.settings.publishSites = { ...(this.settings.publishSites ?? {}) };
     this.lastNotesVersion = data?.lastNotesVersion;
     // Older builds stored the interval in minutes; carry the value over once.
     const stored = data?.settings as { syncIntervalMinutes?: number; syncIntervalSeconds?: number } | undefined;
