@@ -20,9 +20,6 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       "",
       "### 🛡️ Stronger passphrases for new vaults",
       "A new passphrase now needs at least 12 characters — four random words make a strong one that's easy to type.",
-      "",
-      "### 🌐 Publish notes as a website",
-      "**Settings → Syncian → Publish** turns the notes you pick into a public site at obsyncian.com/p/your-name. Choose notes in a tree, confirm they may become public, and Syncian uploads only what changed each time you update. Available on paid plans.",
     ].join("\n"),
   },
   {
