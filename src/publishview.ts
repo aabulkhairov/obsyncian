@@ -3,7 +3,8 @@
 // progress). The pipeline itself lives in publish.ts.
 //
 // English only, like the rest of the plugin.
-import { App, Modal, Notice, Setting, TFile } from "obsidian";
+import { App, Modal, Notice, Setting, TFile, loadMermaid } from "obsidian";
+import { mermaidWithTheme } from "./publishdiagrams";
 import { ApiError, type PublishSiteInfo, type PublishSiteParams } from "./api";
 import type ObsyncPlugin from "./main";
 import {
@@ -51,8 +52,47 @@ export function obsidianSource(app: App): PublishSource {
       bitmap.close();
       return size;
     },
+    renderMermaid: async (code) => {
+      const mermaid = await loadMermaid();
+      const draw = async (theme: "light" | "dark"): Promise<string> => {
+        const id = `obsyncian-publish-${theme}-${Math.random().toString(36).slice(2)}`;
+        try {
+          const { svg } = (await mermaid.render(id, mermaidWithTheme(code, theme))) as { svg: string };
+          return svg;
+        } finally {
+          // Mermaid leaves its scratch element behind when a render throws.
+          activeDocument.getElementById(id)?.remove();
+          activeDocument.getElementById(`d${id}`)?.remove();
+        }
+      };
+      try {
+        return { light: await draw("light"), dark: await draw("dark") };
+      } catch {
+        return null; // a syntax error: the page shows the source instead
+      }
+    },
+    // Screenshots pasted into a board are often several MB each; a reader
+    // looking at a board needs nowhere near that. Longest side to 2000px,
+    // WebP. Kept as is when it's already small or can't be decoded here.
+    shrinkImage: async (data, contentType) => {
+      if (data.byteLength < SHRINK_ABOVE_BYTES || contentType === "image/svg+xml" || contentType === "image/gif") return null;
+      if (typeof createImageBitmap !== "function") return null;
+      const bitmap = await createImageBitmap(new Blob([data], { type: contentType }));
+      const scale = Math.min(1, SHRUNK_LONG_SIDE / Math.max(bitmap.width, bitmap.height));
+      const canvas = activeDocument.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.85));
+      if (!blob || blob.size >= data.byteLength) return null;
+      return { data: await blob.arrayBuffer(), contentType: "image/webp" };
+    },
   };
 }
+
+const SHRINK_ABOVE_BYTES = 400 * 1024;
+const SHRUNK_LONG_SIDE = 2000;
 
 function localFor(plugin: ObsyncPlugin, siteId: number): PublishSiteLocal {
   const key = String(siteId);

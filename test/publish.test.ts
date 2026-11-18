@@ -1,4 +1,5 @@
 import { readFileSync } from "fs";
+import LZString from "lz-string";
 import { resolve as resolvePath } from "path";
 import { describe, expect, it } from "vitest";
 import { ApiError, type ApiClient } from "../src/api";
@@ -497,5 +498,112 @@ describe("consent", () => {
     t.local.selection = sel(["Nowhere"]);
     await expect(t.run(true)).rejects.toMatchObject({ code: "nothing_to_publish" });
     expect(t.asked).toHaveLength(0);
+  });
+});
+
+describe("diagrams", () => {
+  const FLOW = "flowchart LR\n  A[Лид] --> B[Звонок]";
+  const svg = (theme: string) => `<svg width="100%" style="max-width: 300px;" viewBox="0 0 300 120"><text>${theme}</text></svg>`;
+
+  class DrawingSource extends MemorySource {
+    drawn: string[] = [];
+    async renderMermaid(code: string) {
+      this.drawn.push(code);
+      return code.includes("broken") ? null : { light: svg("light"), dark: svg("dark") };
+    }
+  }
+
+  const boardFile = (scene: object, embedded = "") =>
+    `---\nexcalidraw-plugin: parsed\n---\n# Excalidraw Data\n\n## Embedded Files\n${embedded}\n%%\n## Drawing\n\`\`\`compressed-json\n` +
+    LZString.compressToBase64(JSON.stringify(scene)) + "\n```\n%%\n";
+
+  it("draws each Mermaid block in both themes and puts a marker where it was", async () => {
+    const src = new DrawingSource()
+      .note("Notes/A.md", "Before\n\n```mermaid\n" + FLOW + "\n```\n\nAfter")
+      .note("Notes/B.md", "Same diagram:\n\n```mermaid\n" + FLOW + "\n```\n") as DrawingSource;
+    const m = await buildManifest(src, sel(["Notes"]));
+
+    expect(src.drawn).toEqual([FLOW]); // drawn once, used twice
+    const svgs = m.objects.filter((o) => o.content_type === "image/svg+xml");
+    expect(svgs).toHaveLength(2);
+    expect(svgs.every((o) => o.kind === "block" && o.width === 300 && o.height === 120)).toBe(true);
+    const page = m.pages.find((p) => p.path === "Notes/A.md")!;
+    const marker = JSON.parse(/```obsyncian-diagram\n(.*)\n```/.exec(page.content_markdown)![1]);
+    expect(marker).toMatchObject({ kind: "mermaid", type: "flowchart", width: 300, height: 120 });
+    expect(new Set([marker.light, marker.dark])).toEqual(new Set(svgs.map((o) => o.digest)));
+    expect(page.content_markdown).not.toContain("```mermaid");
+
+    const fake = new FakePublishApi();
+    await publishManifest(api(fake), fake.site.id, m, src);
+    const stored = new TextDecoder().decode(fake.storage.get(marker.dark)!.data);
+    expect(stored).toContain('xmlns="http://www.w3.org/2000/svg"');
+    expect(stored).toContain(">dark<");
+    expect(fake.storage.get(marker.dark)!.contentType).toBe("image/svg+xml");
+  });
+
+  it("leaves a block that can't be drawn as code, and draws nothing without a renderer", async () => {
+    const src = new DrawingSource().note("Notes/A.md", "```mermaid\ngraph TD\n  broken[\n```") as DrawingSource;
+    const m = await buildManifest(src, sel(["Notes"]));
+    expect(m.pages[0].content_markdown).toBe("```mermaid\ngraph TD\n  broken[\n```");
+    expect(m.objects).toEqual([]);
+
+    const plain = await buildManifest(new MemorySource().note("Notes/A.md", "```mermaid\n" + FLOW + "\n```"), sel(["Notes"]));
+    expect(plain.pages[0].content_markdown).toContain("```mermaid");
+  });
+
+  it("publishes an embedded Excalidraw board as its scene plus its images, without the Excalidraw plugin", async () => {
+    const scene = {
+      elements: [
+        { id: "r", type: "rectangle", x: 0, y: 0, width: 10, height: 10 },
+        { id: "i", type: "image", fileId: "abc123" },
+        { id: "w", type: "embeddable", link: "https://youtube.com" },
+      ],
+      appState: { viewBackgroundColor: "#ffffff" },
+    };
+    const src = new MemorySource()
+      .note("Notes/Plan.md", "The board:\n![[Путь клиента.excalidraw]]\nDone.")
+      .note("Boards/Путь клиента.excalidraw.md", boardFile(scene, "abc123: [[shot.png]]\n"))
+      .bin("Pictures/shot.png", [0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const m = await buildManifest(src, sel(["Notes"]));
+
+    expect(m.notes).toEqual(["Notes/Plan.md"]); // the board isn't a page of its own
+    expect(m.attachments).toEqual(["Boards/Путь клиента.excalidraw.md", "Pictures/shot.png"]); // listed for consent
+    const sceneObject = m.objects.find((o) => o.content_type === "application/json")!;
+    expect(sceneObject).toMatchObject({ kind: "block", source_path: "Boards/Путь клиента.excalidraw.md" });
+    const image = m.objects.find((o) => o.content_type === "image/png")!;
+    const published = JSON.parse(new TextDecoder().decode(m.generated.get(sceneObject.digest)));
+    expect(published.elements.map((e: { id: string }) => e.id)).toEqual(["r", "i"]);
+    expect(published.files).toEqual({ abc123: { id: "abc123", mimeType: "image/png", asset: image.digest } });
+
+    const content = m.pages[0].content_markdown;
+    expect(content).toBe(`The board:\n\n\`\`\`obsyncian-diagram\n{"kind":"excalidraw","scene":"${sceneObject.digest}","title":"Путь клиента"}\n\`\`\`\n\nDone.`);
+
+    const fake = new FakePublishApi();
+    await publishManifest(api(fake), fake.site.id, m, src);
+    expect(fake.storage.has(sceneObject.digest)).toBe(true);
+    expect(fake.storage.has(image.digest)).toBe(true);
+  });
+
+  it("shrinks big images placed in a board", async () => {
+    class Shrinking extends MemorySource {
+      async shrinkImage() { return { data: new Uint8Array([9, 9]).buffer, contentType: "image/webp" }; }
+    }
+    const src = new Shrinking()
+      .note("Notes/Plan.md", "![[Board.excalidraw]]")
+      .note("Board.excalidraw.md", boardFile({ elements: [{ id: "i", type: "image", fileId: "f9" }] }, "f9: [[big.png]]"))
+      .bin("big.png", [1, 2, 3, 4, 5, 6, 7, 8]);
+    const m = await buildManifest(src, sel(["Notes"]));
+    const webp = m.objects.find((o) => o.content_type === "image/webp")!;
+    expect(webp.byte_size).toBe(2);
+    expect(m.generated.has(webp.digest)).toBe(true);
+  });
+
+  it("a board that can't be read still gets a card, saying so", async () => {
+    const src = new MemorySource()
+      .note("Notes/Plan.md", "![[Broken.excalidraw]]")
+      .note("Broken.excalidraw.md", "# no drawing here");
+    const m = await buildManifest(src, sel(["Notes"]));
+    expect(m.pages[0].content_markdown).toContain('{"kind":"excalidraw","scene":null,"title":"Broken"}');
+    expect(m.skipped).toContain("Broken.excalidraw.md");
   });
 });

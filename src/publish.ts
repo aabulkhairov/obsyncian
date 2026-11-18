@@ -18,6 +18,7 @@
 // sync codec is never involved, so an encrypted vault publishes the plaintext
 // of exactly the notes that were picked, and nothing ciphertext-shaped can end
 // up on a public page.
+import { BoardMarker, MermaidMarker, boardScene, dataUrlBytes, diagramFence, isBoardPath, mermaidSources, mermaidType, parseBoard, replaceMermaid, standaloneSvg } from "./publishdiagrams";
 import { ApiError, isConnectionLoss, type ApiClient, type PublishObjectInput, type PublishPageInput, type PublishSiteInfo } from "./api";
 import { isExcluded, pool } from "./sync";
 import { formatBytes, sha256Hex } from "./util";
@@ -203,6 +204,12 @@ export interface PublishSource {
   resolve(linkpath: string, fromPath: string): string | null;
   // Pixel size of an image, when the platform can tell cheaply.
   imageSize?(data: ArrayBuffer, contentType: string): Promise<{ width: number; height: number } | null>;
+  // A Mermaid block drawn as standalone SVG in each reader theme, or null if
+  // it can't be (a syntax error) — see publishdiagrams.ts.
+  renderMermaid?(code: string): Promise<{ light: string; dark: string } | null>;
+  // A large image pasted into an Excalidraw board, shrunk for the web, or
+  // null to keep it as it is.
+  shrinkImage?(data: ArrayBuffer, contentType: string): Promise<{ data: ArrayBuffer; contentType: string } | null>;
 }
 
 const IMAGE_TYPES: Record<string, string> = {
@@ -287,6 +294,9 @@ export interface LinkContext {
   slugOf(path: string): string | undefined;
   // Digest of an uploaded attachment, or undefined if it couldn't be read.
   digestOf(path: string): string | undefined;
+  // The marker for an embedded Excalidraw board (see publishdiagrams.ts), or
+  // undefined when boards aren't being published.
+  boardOf?(path: string): string | undefined;
 }
 
 function escapeLabel(text: string): string {
@@ -326,6 +336,12 @@ function rewriteTarget(ctx: LinkContext, embed: boolean, rawTarget: string, labe
 
   const target = ctx.resolve(linkpath, ctx.path);
   const shown = label ?? (subpath && !subpath.startsWith("^") ? `${stem(linkpath)} > ${subpath.split("#").pop()}` : stem(linkpath));
+
+  // An embedded Excalidraw board becomes a diagram card, on lines of its own.
+  if (embed && target && isBoardPath(target)) {
+    const marker = ctx.boardOf?.(target);
+    if (marker) return `\n${marker}\n`;
+  }
 
   if (target && !/\.md$/i.test(target) && !/\.excalidraw$/i.test(target)) {
     const digest = ctx.digestOf(target);
@@ -372,6 +388,19 @@ export function rewriteMarkdown(body: string, ctx: LinkContext): string {
         return rewriteTarget(ctx, bang === "!", raw, label, bang === "!" ? label : null);
       })
   );
+}
+
+// The Excalidraw boards a note embeds, resolved.
+export function referencedBoards(body: string, path: string, resolve: (linkpath: string, from: string) => string | null): string[] {
+  const found = new Set<string>();
+  rewriteMarkdown(body, {
+    path, resolve, slugOf: () => undefined, digestOf: () => undefined,
+    boardOf: (target) => {
+      found.add(target);
+      return undefined;
+    },
+  });
+  return [...found];
 }
 
 // The references a note makes to non-note files, resolved. Run before any
@@ -439,6 +468,9 @@ export interface PublishManifest {
   objects: PublishObjectInput[];
   // digest → the vault file whose bytes it is, for the upload step.
   sources: Map<string, string>;
+  // digest → bytes made while building (diagram images, board scenes,
+  // shrunk board images): uploaded from here, not read from the vault.
+  generated: Map<string, ArrayBuffer>;
   notes: string[];
   attachments: string[];
   // Referenced but unreadable or empty — shown on the page as missing.
@@ -465,11 +497,13 @@ export async function buildManifest(source: PublishSource, sel: PublishSelection
   // Pass 1: read every note once, and find what it points at.
   const bodies = new Map<string, string>();
   const referenced = new Set<string>();
+  const boardPaths = new Set<string>();
   for (const [i, note] of notes.entries()) {
     onProgress(i, notes.length, "reading");
     const body = stripFrontmatter(await source.read(note.path));
     bodies.set(note.path, body);
     for (const ref of referencedFiles(body, note.path, (l, f) => source.resolve(l, f))) referenced.add(ref);
+    for (const board of referencedBoards(body, note.path, (l, f) => source.resolve(l, f))) boardPaths.add(board);
   }
 
   // Pass 2: hash the attachments. Bytes aren't kept — the few that turn out
@@ -509,14 +543,88 @@ export async function buildManifest(source: PublishSource, sel: PublishSelection
     sources.set(digest, path);
   }
 
+  // Bytes made here rather than read from the vault: each becomes an object
+  // like any attachment, uploaded from memory.
+  const generated = new Map<string, ArrayBuffer>();
+  const addGenerated = async (data: ArrayBuffer, object: Omit<PublishObjectInput, "digest" | "byte_size">): Promise<string> => {
+    const digest = await sha256Hex(data);
+    if (!objects.has(digest)) {
+      objects.set(digest, { digest, byte_size: data.byteLength, ...object });
+      generated.set(digest, data);
+    }
+    return digest;
+  };
+
+  // Pass 2b: Excalidraw boards — scene data plus the images placed in them.
+  const boards = new Map<string, string>(); // board path → its marker fence
+  for (const path of [...boardPaths].sort(comparePaths)) {
+    const title = stem(basename(path).replace(/\.excalidraw(\.md)?$/i, ""));
+    let marker: BoardMarker = { kind: "excalidraw", scene: null, title };
+    try {
+      const board = parseBoard(await source.read(path), path);
+      if (board) {
+        const imageDigests = new Map<string, { digest: string; mimeType: string }>();
+        const imagePaths: string[] = [];
+        for (const [id, image] of board.images) {
+          let data: ArrayBuffer | null = null;
+          let mimeType = "image/png";
+          if ("dataURL" in image) {
+            data = dataUrlBytes(image.dataURL);
+            mimeType = image.mimeType;
+          } else {
+            const file = source.resolve(image.linkpath, path);
+            if (file && isImage(file)) {
+              data = await source.readBinary(file).catch(() => null);
+              mimeType = contentTypeFor(file);
+              if (data?.byteLength) imagePaths.push(file);
+            }
+          }
+          if (!data || data.byteLength === 0) continue;
+          const smaller = source.shrinkImage ? await source.shrinkImage(data, mimeType).catch(() => null) : null;
+          if (smaller) ({ data, contentType: mimeType } = smaller);
+          imageDigests.set(id, { digest: await addGenerated(data, { content_type: mimeType, kind: "asset", source_path: path }), mimeType });
+        }
+        const scene = new TextEncoder().encode(boardScene(board, imageDigests)).buffer as ArrayBuffer;
+        marker = { kind: "excalidraw", scene: await addGenerated(scene, { content_type: "application/json", kind: "block", source_path: path }), title };
+        // Leaving the vault like any attachment, so the consent step lists them.
+        for (const file of [path, ...imagePaths]) if (!attachments.includes(file)) attachments.push(file);
+      }
+    } catch {
+      // unreadable: the card says the board wasn't published
+    }
+    if (!marker.scene) skipped.push(path);
+    boards.set(path, diagramFence(marker));
+  }
+
+  // Pass 2c: Mermaid, drawn by Obsidian in both reader themes. A block that
+  // fails to draw stays as code, and the page shows its source.
+  const drawn = new Map<string, MermaidMarker>();
+  if (source.renderMermaid) {
+    const codes = [...new Set([...bodies.values()].flatMap(mermaidSources))];
+    for (const code of codes) {
+      const svgs = await source.renderMermaid(code).catch(() => null);
+      const light = svgs && standaloneSvg(svgs.light);
+      const dark = svgs && standaloneSvg(svgs.dark);
+      if (!light || !dark) continue;
+      const encode = (svg: string) => new TextEncoder().encode(svg).buffer as ArrayBuffer;
+      const object = { content_type: "image/svg+xml", kind: "block" as const, width: light.width, height: light.height };
+      drawn.set(code, {
+        kind: "mermaid", type: mermaidType(code), width: light.width, height: light.height,
+        light: await addGenerated(encode(light.svg), object),
+        dark: await addGenerated(encode(dark.svg), { ...object, width: dark.width, height: dark.height }),
+      });
+    }
+  }
+
   // Pass 3: rewrite and lay out the pages.
   const pages: PublishPageInput[] = notes.map((note, position) => {
-    const body = bodies.get(note.path)!;
+    const body = replaceMermaid(bodies.get(note.path)!, drawn);
     const content = rewriteMarkdown(body, {
       path: note.path,
       resolve: (l, f) => source.resolve(l, f),
       slugOf: (p) => slugs.get(p),
       digestOf: (p) => digests.get(p),
+      boardOf: (p) => boards.get(p),
     });
     const section = navSection(note.path);
     const page: PublishPageInput = {
@@ -538,7 +646,7 @@ export async function buildManifest(source: PublishSource, sel: PublishSelection
   const bytes = pages.reduce((sum, p) => sum + utf8Length(p.content_markdown), 0) +
     [...objects.values()].reduce((sum, o) => sum + o.byte_size, 0);
 
-  return { pages, objects: [...objects.values()], sources, notes: notes.map((n) => n.path), attachments, skipped, homePath, bytes };
+  return { pages, objects: [...objects.values()], sources, generated, notes: notes.map((n) => n.path), attachments, skipped, homePath, bytes };
 }
 
 // Top-level folder → the sidebar section a page is listed under. Notes at the
@@ -687,9 +795,12 @@ export async function publishManifest(
     if (uploads.length) report();
     await pool(uploads, UPLOAD_CONCURRENCY, async (upload) => {
       const object = byDigest.get(upload.digest);
-      const path = manifest.sources.get(upload.digest);
-      if (!object || !path) throw new Error(`The server asked for a file this publication doesn't have (${upload.digest.slice(0, 12)}).`);
-      const data = await source.readBinary(path);
+      const made = manifest.generated?.get(upload.digest);
+      const path = manifest.sources.get(upload.digest) ?? object?.source_path;
+      if (!object || (!made && !manifest.sources.has(upload.digest))) {
+        throw new Error(`The server asked for a file this publication doesn't have (${upload.digest.slice(0, 12)}).`);
+      }
+      const data = made ?? await source.readBinary(path!);
       // The PUT is signed for the planned length; a file edited since it was
       // hashed would be refused by storage anyway, with a less useful error.
       if (data.byteLength !== object.byte_size) {

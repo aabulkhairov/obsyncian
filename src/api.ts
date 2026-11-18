@@ -122,7 +122,8 @@ export interface PublishObjectInput {
   digest: string; // sha256 of the plaintext bytes
   byte_size: number;
   content_type: string;
-  kind: "asset";
+  // "block": a diagram drawn while publishing (Mermaid SVG, board scene).
+  kind: "asset" | "block";
   source_path?: string;
   width?: number;
   height?: number;

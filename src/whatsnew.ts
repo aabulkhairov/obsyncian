@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.30",
+    notes: [
+      "### 📊 Diagrams on your published sites",
+      "Mermaid diagrams and Excalidraw boards in your notes now appear on Obsyncian Publish pages. Mermaid is drawn in the site's light and dark themes; boards open in the real Excalidraw viewer, read-only. Both can be zoomed and opened full screen.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.27",
     notes: [
       "### 🔐 Encrypt an existing vault",
