@@ -778,6 +778,8 @@ export function publishErrorMessage(e: unknown): string {
       return `Publishing is available on paid plans. ${UPGRADE_HINT}`;
     case "publish_site_limit_reached":
       return `${e.message} Delete a site you no longer need, or upgrade. ${UPGRADE_HINT}`;
+    case "private_sites_not_on_plan":
+      return `Private sites are available on Standard and Plus. Switch Private off to keep the site public, or upgrade. ${UPGRADE_HINT}`;
     case "publish_bytes_exceeded":
       return `This publication is bigger than your plan's publishing allowance. Unselect some notes or large attachments, or upgrade. ${UPGRADE_HINT}`;
     case "file_too_large":
