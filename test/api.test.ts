@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, findVaultByName, withTimeout, type VaultInfo } from "../src/api";
+import { ApiError, findVaultByName, retryTransient, withTimeout, type VaultInfo } from "../src/api";
 
 describe("withTimeout", () => {
   beforeEach(() => vi.useFakeTimers());
@@ -42,5 +42,31 @@ describe("findVaultByName", () => {
 
   it("returns undefined for an empty vault list", () => {
     expect(findVaultByName([], "Anything")).toBeUndefined();
+  });
+});
+
+describe("retryTransient", () => {
+  const replies = (...statuses: number[]) => {
+    const send = vi.fn();
+    for (const status of statuses) send.mockResolvedValueOnce({ status });
+    return send;
+  };
+
+  it("resends after a transient 503 and returns the success", async () => {
+    const send = replies(503, 200);
+    await expect(retryTransient(send, [0, 0])).resolves.toEqual({ status: 200 });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives back the last bad reply once the retries run out", async () => {
+    const send = replies(503, 502, 503);
+    await expect(retryTransient(send, [0, 0])).resolves.toEqual({ status: 503 });
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not resend a permanent error", async () => {
+    const send = replies(403);
+    await expect(retryTransient(send, [0, 0])).resolves.toEqual({ status: 403 });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

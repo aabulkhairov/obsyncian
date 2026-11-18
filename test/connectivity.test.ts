@@ -21,9 +21,23 @@ describe("daily connectivity report", () => {
 
     // A day after the first failure, the next cycle — even a good one — sends it.
     expect(noteConnectivity(s, ok, 1_000 + DAY, "obsyncian.com"))
-      .toBe("3 sync attempt(s) in the last day couldn't reach obsyncian.com. Last: No response after 10s (GET /v1/vaults/72/changes)");
+      .toBe("3 of 5 sync attempt(s) in the last day failed to reach obsyncian.com or its storage. Last: No response after 10s (GET /v1/vaults/72/changes)");
     expect(s.connectivity).toBeNull();
     expect(noteConnectivity(s, ok, 2 * DAY + 1_000, "obsyncian.com")).toBeNull();
+  });
+
+  it("stays quiet about a stray failure or two in an otherwise good day", () => {
+    const s = { ...DEFAULT_SETTINGS };
+    noteConnectivity(s, cut, 0, "obsyncian.com");
+    expect(noteConnectivity(s, ok, DAY, "obsyncian.com")).toBeNull();
+    expect(s.connectivity).toBeNull();
+  });
+
+  it("stays quiet when failures are outnumbered by successful syncs", () => {
+    const s = { ...DEFAULT_SETTINGS };
+    for (let i = 0; i < 4; i++) noteConnectivity(s, offline, i, "obsyncian.com");
+    for (let i = 0; i < 10; i++) noteConnectivity(s, ok, 100 + i, "obsyncian.com");
+    expect(noteConnectivity(s, ok, DAY + 1, "obsyncian.com")).toBeNull();
   });
 
   it("names the server, so a mirror shows up as such", () => {

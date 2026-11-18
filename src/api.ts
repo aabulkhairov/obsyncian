@@ -187,6 +187,23 @@ function blobTimeout(bytes: number): number {
   return BLOB_TIMEOUT_MS + Math.ceil(bytes / BLOB_MIN_BYTES_PER_SEC) * 1000;
 }
 
+// R2 now and then answers a transfer with a 5xx or 429 that clears within
+// seconds (seen in production as "Blob upload failed: HTTP 503"). A presigned
+// URL stays valid well past these delays, so the same request is simply sent
+// again; only a status that is still bad after the last try reaches the caller.
+const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
+export const TRANSIENT_RETRY_DELAYS_MS = [1000, 3000];
+
+export async function retryTransient<T extends { status: number }>(
+  send: () => Promise<T>, delaysMs: number[] = TRANSIENT_RETRY_DELAYS_MS
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await send();
+    if (!TRANSIENT_STATUSES.has(res.status) || attempt >= delaysMs.length) return res;
+    await new Promise((resolve) => window.setTimeout(resolve, delaysMs[attempt]));
+  }
+}
+
 export type BatchItemError = { error: { code: string; message: string } };
 
 // The connection itself went away mid-request — the device slept, Wi-Fi
@@ -344,10 +361,10 @@ export class ApiClient {
   // abandoned rather than aborted. Each upload gets a fresh presigned key, so
   // a straggler can't overwrite a newer one — it only costs bandwidth.
   async putBlob(url: string, data: ArrayBuffer): Promise<void> {
-    const res = await withTimeout(
+    const res = await retryTransient(() => withTimeout(
       requestUrl({ url, method: "PUT", contentType: "application/octet-stream", body: data, throw: false }),
       blobTimeout(data.byteLength), "blob upload"
-    );
+    ));
     if (res.status >= 400) throw new ApiError(res.status, "blob_put_failed", `Blob upload failed: HTTP ${res.status}`);
   }
 
@@ -356,16 +373,16 @@ export class ApiClient {
   // in an <img>, and a PDF would download instead of opening. The presigned
   // URL signs the length, not the type, so the type is ours to choose.
   async putPublishObject(url: string, data: ArrayBuffer, contentType: string): Promise<void> {
-    const res = await withTimeout(
+    const res = await retryTransient(() => withTimeout(
       requestUrl({ url, method: "PUT", contentType, body: data, throw: false }),
       blobTimeout(data.byteLength), "publish upload"
-    );
+    ));
     if (res.status >= 400) throw new ApiError(res.status, "blob_put_failed", `Upload failed: HTTP ${res.status}`);
   }
 
   // `size` (the change's recorded size) only scales the timeout.
   async getBlob(url: string, size = 0): Promise<ArrayBuffer> {
-    const res = await withTimeout(requestUrl({ url, throw: false }), blobTimeout(size), "blob download");
+    const res = await retryTransient(() => withTimeout(requestUrl({ url, throw: false }), blobTimeout(size), "blob download"));
     if (res.status >= 400) throw new ApiError(res.status, "blob_get_failed", `Blob download failed: HTTP ${res.status}`);
     return res.arrayBuffer;
   }

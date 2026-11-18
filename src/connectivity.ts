@@ -9,20 +9,31 @@ import type { SyncReport } from "./sync";
 
 export const CONNECTIVITY_REPORT_EVERY_MS = 24 * 60 * 60_000;
 
+// A laptop that sleeps through a sync, or Wi-Fi that drops for a minute,
+// loses a cycle or two a day; that's normal, and reporting it only buries the
+// devices that really can't get through. So the day's tally goes out only when
+// failures are both repeated and at least as common as successful cycles.
+export const CONNECTIVITY_MIN_FAILURES = 3;
+
 // Records this cycle's outcome. Returns the report to send when a day's
-// worth has piled up, else null.
+// worth has piled up and looks like a real problem, else null.
 export function noteConnectivity(settings: ObsyncSettings, report: SyncReport, now: number, host: string): string | null {
   const failed = report.offline || report.interrupted > 0;
-  if (failed) {
-    const tally = settings.connectivity ?? { since: now, failures: 0, last: "" };
-    tally.failures++;
-    tally.last = report.offline ? (report.offlineReason ?? "no connection") : `${report.interrupted} transfer(s) interrupted`;
-    settings.connectivity = tally;
-  }
   const tally = settings.connectivity;
-  if (!tally || now - tally.since < CONNECTIVITY_REPORT_EVERY_MS) return null;
+  if (failed) {
+    const t = tally ?? { since: now, failures: 0, successes: 0, last: "" };
+    t.failures++;
+    t.last = report.offline ? (report.offlineReason ?? "no connection") : `${report.interrupted} transfer(s) interrupted`;
+    settings.connectivity = t;
+  } else if (tally) {
+    tally.successes = (tally.successes ?? 0) + 1;
+  }
+  const t = settings.connectivity;
+  if (!t || now - t.since < CONNECTIVITY_REPORT_EVERY_MS) return null;
   settings.connectivity = null;
-  return `${tally.failures} sync attempt(s) in the last day couldn't reach ${host}. Last: ${tally.last}`;
+  const successes = t.successes ?? 0;
+  if (t.failures < CONNECTIVITY_MIN_FAILURES || t.failures < successes) return null;
+  return `${t.failures} of ${t.failures + successes} sync attempt(s) in the last day failed to reach ${host} or its storage. Last: ${t.last}`;
 }
 
 export function hostOf(serverUrl: string): string {

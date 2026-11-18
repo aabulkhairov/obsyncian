@@ -58,6 +58,9 @@ export interface PublishSiteLocal {
 export interface ConnectivityTally {
   since: number; // epoch ms of the first failure in this tally
   failures: number;
+  // Cycles that went through fine since the first failure. Optional: tallies
+  // saved by 1.0.30 and earlier don't have it.
+  successes?: number;
   last: string;
 }
 

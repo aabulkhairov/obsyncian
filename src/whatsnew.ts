@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.33",
+    notes: [
+      "### 🔁 Steadier uploads",
+      "When our storage provider has a brief hiccup, Syncian now quietly tries the upload or download again a couple of times instead of giving up and showing an error. A sync that loses a cycle or two to sleep or flaky Wi-Fi no longer counts as a connection problem.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.32",
     notes: [
       "### 🚪 Log out frees the device",
