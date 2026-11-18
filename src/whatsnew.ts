@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.32",
+    notes: [
+      "### 🚪 Log out frees the device",
+      "**Log out** now signs this device out of your account on our side too, so it no longer shows among your devices. To see every device signed in to your account, or sign one out remotely, send **/devices** to the bot.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.31",
     notes: [
       "### ✎ Excalidraw boards as pages",

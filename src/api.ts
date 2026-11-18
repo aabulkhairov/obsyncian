@@ -244,6 +244,11 @@ export class ApiClient {
     return this.req("POST", "/v1/auth/telegram/verify", { code, device_name: deviceName }, false);
   }
 
+  // Ends this device's login on the server, which frees its device slot.
+  logout(): Promise<void> {
+    return this.req("DELETE", "/v1/auth/session", undefined, true, 5_000);
+  }
+
   me(): Promise<{ email: string; plan: string; storage_used: number; storage_limit: number; sync_entitled?: boolean }> {
     return this.req("GET", "/v1/me");
   }

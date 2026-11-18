@@ -232,6 +232,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
             new Notice("Syncian: finish or cancel the vault encryption first (below).");
             return;
           }
+          // Tell the server too, so the account stops listing this device.
+          // Best-effort and not waited for: offline, the login simply lapses
+          // after a month without syncing (and frees its slot then).
+          if (s.apiToken) void this.plugin.api.logout().catch(() => {});
           s.apiToken = "";
           s.identity = "";
           s.needsPassphrase = false;
@@ -276,6 +280,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
           this.plugin.invalidateCodec();
           await this.plugin.saveSettings();
           this.display();
+          // People unlink expecting to free a device; unlinking only stops
+          // syncing this vault.
+          new Notice("Syncian: vault unlinked. This device is still signed in to your account — use Log out above to free its device slot.", 8000);
         })
       );
 
