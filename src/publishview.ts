@@ -354,7 +354,7 @@ function askConsent(plugin: ObsyncPlugin, site: PublishSiteInfo, manifest: Publi
 // allowed but warned about: every shared link to the old address stops
 // working.
 class SiteFormModal extends Modal {
-  private params: Required<Pick<PublishSiteParams, "slug" | "title" | "author_label" | "locale" | "visibility">>;
+  private params: Required<Pick<PublishSiteParams, "slug" | "title" | "description" | "author_label" | "locale" | "visibility">>;
 
   constructor(
     app: App,
@@ -366,6 +366,7 @@ class SiteFormModal extends Modal {
     this.params = {
       slug: site?.slug ?? asciiSlug(vaultName).slice(0, 49).replace(/-+$/, ""),
       title: site?.title ?? vaultName,
+      description: site?.description ?? "",
       author_label: site?.author_label ?? "",
       locale: site?.locale ?? "en",
       visibility: site?.visibility ?? "public",
@@ -396,6 +397,17 @@ class SiteFormModal extends Modal {
     new Setting(contentEl).setName("Title").setDesc("Shown at the top of every page.").addText((text) =>
       text.setValue(this.params.title).onChange((v) => (this.params.title = v))
     );
+    // Goes on a private site's sign-in page, its preview image and link
+    // previews (Telegram, social networks). The server caps it at 300.
+    new Setting(contentEl)
+      .setName("Description")
+      .setDesc("Optional. A sentence or two about what's inside, shown in link previews.")
+      .addTextArea((text) => {
+        text.setPlaceholder("Working notes on finding the first 100 customers").setValue(this.params.description)
+          .onChange((v) => (this.params.description = v));
+        text.inputEl.maxLength = 300;
+        text.inputEl.rows = 3;
+      });
     new Setting(contentEl).setName("Author").setDesc("Optional. How you're credited on the site.").addText((text) =>
       text.setPlaceholder("Your name").setValue(this.params.author_label).onChange((v) => (this.params.author_label = v))
     );
@@ -436,7 +448,12 @@ class SiteFormModal extends Modal {
         }
         btn.setDisabled(true);
         try {
-          await this.submit({ ...this.params, title: this.params.title.trim(), author_label: this.params.author_label.trim() });
+          await this.submit({
+            ...this.params,
+            title: this.params.title.trim(),
+            description: this.params.description.trim(),
+            author_label: this.params.author_label.trim(),
+          });
           this.close();
         } catch (e) {
           btn.setDisabled(false);
