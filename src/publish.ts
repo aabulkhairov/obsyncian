@@ -18,7 +18,7 @@
 // sync codec is never involved, so an encrypted vault publishes the plaintext
 // of exactly the notes that were picked, and nothing ciphertext-shaped can end
 // up on a public page.
-import { BoardMarker, MermaidMarker, boardScene, dataUrlBytes, diagramFence, isBoardPath, mermaidSources, mermaidType, parseBoard, replaceMermaid, standaloneSvg } from "./publishdiagrams";
+import { BoardMarker, MermaidMarker, boardScene, boardText, dataUrlBytes, diagramFence, isBoardPath, mermaidSources, mermaidType, parseBoard, replaceMermaid, standaloneSvg } from "./publishdiagrams";
 import { ApiError, isConnectionLoss, type ApiClient, type PublishObjectInput, type PublishPageInput, type PublishSiteInfo } from "./api";
 import { isExcluded, pool } from "./sync";
 import { formatBytes, sha256Hex } from "./util";
@@ -70,7 +70,7 @@ const CYRILLIC: Record<string, string> = {
 // a-z/0-9 collapsed to one dash. ASCII by construction, as PublishPage's slug
 // format and the reader route require. Empty for a name in, say, Japanese.
 export function asciiSlug(target: string): string {
-  const last = (target.split("/").pop() ?? "").replace(/\.md$/i, "").toLowerCase();
+  const last = pageName(target.split("/").pop() ?? "").toLowerCase();
   return last
     .replace(/[\u0400-\u04FF]/g, (ch) => CYRILLIC[ch] ?? ch)
     .normalize("NFKD")
@@ -175,11 +175,15 @@ export function emptySelection(): PublishSelection {
   return { include: [], exclude: [] };
 }
 
-// Only markdown notes become pages. Excalidraw drawings are markdown files
-// too, but rendering one needs the Excalidraw plugin.
-// TODO(P7): pre-render Excalidraw to SVG and publish it as a block.
-export function isPublishableNote(path: string): boolean {
-  return /\.md$/i.test(path) && !/\.excalidraw\.md$/i.test(path);
+// What can be a page of a site: markdown notes, and Excalidraw boards
+// (`.excalidraw.md`, or a bare `.excalidraw`), each shown as the board alone.
+export function isPublishablePage(path: string): boolean {
+  return /\.md$/i.test(path) || isBoardPath(path);
+}
+
+// A page's name as people know it: no ".md", no ".excalidraw".
+export function pageName(name: string): string {
+  return name.replace(/\.excalidraw(\.md)?$/i, "").replace(/\.md$/i, "");
 }
 
 // --- the vault, as publishing sees it --------------------------------------
@@ -242,7 +246,7 @@ function basename(path: string): string {
 }
 
 function stem(path: string): string {
-  return basename(path).replace(/\.md$/i, "");
+  return pageName(basename(path));
 }
 
 // Folders before files at each level would be nicer in a tree, but the
@@ -436,6 +440,10 @@ export function titleFor(body: string, path: string): string {
   return plain || stem(path);
 }
 
+function clip(text: string): string {
+  return text.length > 200 ? text.slice(0, 199).replace(/\s+\S*$/, "") + "…" : text;
+}
+
 // A line or two for search results and link previews: the first ordinary
 // paragraph, markup stripped.
 export function excerptFor(rewritten: string): string | undefined {
@@ -452,7 +460,7 @@ export function excerptFor(rewritten: string): string | undefined {
         .replace(/\s+/g, " ")
         .trim();
       if (plain) {
-        found = plain.length > 200 ? plain.slice(0, 199).replace(/\s+\S*$/, "") + "…" : plain;
+        found = clip(plain);
         break;
       }
     }
@@ -490,7 +498,7 @@ export interface BuildProgress {
 // Step 1 of the pipeline: everything the server needs, computed locally.
 export async function buildManifest(source: PublishSource, sel: PublishSelection, onProgress: BuildProgress = () => {}): Promise<PublishManifest> {
   const notes = source.files()
-    .filter((f) => isPublishableNote(f.path) && isSelected(sel, f.path))
+    .filter((f) => isPublishablePage(f.path) && isSelected(sel, f.path))
     .sort((a, b) => sortKey(a.path).localeCompare(sortKey(b.path), undefined, { numeric: true, sensitivity: "base" }) || comparePaths(a.path, b.path));
   const slugs = assignSlugs(notes.map((n) => n.path));
 
@@ -500,6 +508,11 @@ export async function buildManifest(source: PublishSource, sel: PublishSelection
   const boardPaths = new Set<string>();
   for (const [i, note] of notes.entries()) {
     onProgress(i, notes.length, "reading");
+    // A board page is the board itself, read with the other boards below.
+    if (isBoardPath(note.path)) {
+      boardPaths.add(note.path);
+      continue;
+    }
     const body = stripFrontmatter(await source.read(note.path));
     bodies.set(note.path, body);
     for (const ref of referencedFiles(body, note.path, (l, f) => source.resolve(l, f))) referenced.add(ref);
@@ -556,9 +569,11 @@ export async function buildManifest(source: PublishSource, sel: PublishSelection
   };
 
   // Pass 2b: Excalidraw boards — scene data plus the images placed in them.
-  const boards = new Map<string, string>(); // board path → its marker fence
+  const boards = new Map<string, BoardMarker>();
+  const boardTexts = new Map<string, string>(); // for a board page's excerpt
+  const pagePaths = new Set(notes.map((n) => n.path));
   for (const path of [...boardPaths].sort(comparePaths)) {
-    const title = stem(basename(path).replace(/\.excalidraw(\.md)?$/i, ""));
+    const title = stem(path);
     let marker: BoardMarker = { kind: "excalidraw", scene: null, title };
     try {
       const board = parseBoard(await source.read(path), path);
@@ -586,14 +601,16 @@ export async function buildManifest(source: PublishSource, sel: PublishSelection
         }
         const scene = new TextEncoder().encode(boardScene(board, imageDigests)).buffer as ArrayBuffer;
         marker = { kind: "excalidraw", scene: await addGenerated(scene, { content_type: "application/json", kind: "block", source_path: path }), title };
-        // Leaving the vault like any attachment, so the consent step lists them.
-        for (const file of [path, ...imagePaths]) if (!attachments.includes(file)) attachments.push(file);
+        boardTexts.set(path, boardText(board));
+        // Leaving the vault like any attachment, so the consent step lists
+        // them (a board that is a page of its own is listed as one already).
+        for (const file of pagePaths.has(path) ? imagePaths : [path, ...imagePaths]) if (!attachments.includes(file)) attachments.push(file);
       }
     } catch {
       // unreadable: the card says the board wasn't published
     }
     if (!marker.scene) skipped.push(path);
-    boards.set(path, diagramFence(marker));
+    boards.set(path, marker);
   }
 
   // Pass 2c: Mermaid, drawn by Obsidian in both reader themes. A block that
@@ -617,26 +634,33 @@ export async function buildManifest(source: PublishSource, sel: PublishSelection
   }
 
   // Pass 3: rewrite and lay out the pages.
+  const boardFence = (p: string) => {
+    const marker = boards.get(p);
+    return marker && diagramFence(marker);
+  };
   const pages: PublishPageInput[] = notes.map((note, position) => {
-    const body = replaceMermaid(bodies.get(note.path)!, drawn);
-    const content = rewriteMarkdown(body, {
-      path: note.path,
-      resolve: (l, f) => source.resolve(l, f),
-      slugOf: (p) => slugs.get(p),
-      digestOf: (p) => digests.get(p),
-      boardOf: (p) => boards.get(p),
-    });
+    const board = isBoardPath(note.path) ? boards.get(note.path)! : null;
+    const body = board ? "" : replaceMermaid(bodies.get(note.path)!, drawn);
+    const content = board
+      ? diagramFence({ ...board, page: true }) + "\n"
+      : rewriteMarkdown(body, {
+        path: note.path,
+        resolve: (l, f) => source.resolve(l, f),
+        slugOf: (p) => slugs.get(p),
+        digestOf: (p) => digests.get(p),
+        boardOf: boardFence,
+      });
     const section = navSection(note.path);
     const page: PublishPageInput = {
       path: note.path,
       slug: slugs.get(note.path)!,
-      title: titleFor(body, note.path),
+      title: board ? board.title : titleFor(body, note.path),
       position,
       content_markdown: content,
       source_modified_at: new Date(note.mtime).toISOString(),
     };
     if (section) page.nav_section = section;
-    const excerpt = excerptFor(content);
+    const excerpt = board ? clip(boardTexts.get(note.path) ?? "") || undefined : excerptFor(content);
     if (excerpt) page.excerpt = excerpt;
     // TODO(P5): `gated` per page arrives with the gate; never sent before.
     return page;
@@ -682,7 +706,7 @@ export function estimateSelection(
   const attached = new Map<string, number>();
   const byPath = new Map(files.map((f) => [f.path, f]));
   for (const f of files) {
-    if (!isPublishableNote(f.path) || !isSelected(sel, f.path)) continue;
+    if (!isPublishablePage(f.path) || !isSelected(sel, f.path)) continue;
     notes++;
     bytes += f.size;
     for (const target of linksOf(f.path)) {

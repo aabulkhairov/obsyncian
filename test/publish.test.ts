@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { ApiError, type ApiClient } from "../src/api";
 import {
   ASSET_PREFIX,
+  PAGE_PREFIX,
   COMMIT_CHUNK_PAGES,
   PAGE_SLUG_FORMAT,
   UPLOAD_CONCURRENCY,
@@ -235,12 +236,12 @@ describe("manifest", () => {
     const cat = await digestOf(PNG);
     const pdf = await digestOf([1, 2, 3, 4]);
 
-    expect(m.notes).toEqual(["Welcome.md", "Guide/Code.md", "Guide/Intro.md", "Guide/Привет мир.md"]);
+    expect(m.notes).toEqual(["Welcome.md", "Guide/Code.md", "Guide/Drawing.excalidraw.md", "Guide/Intro.md", "Guide/Привет мир.md"]);
     // Attachments come along even though no folder of theirs was ticked;
     // identical bytes are one object; an empty file is skipped.
     expect(m.attachments.sort()).toEqual(["attachments/cat copy.png", "cat.png", "files/doc.pdf"]);
     expect(m.objects.map((o) => o.digest).sort()).toEqual([cat, pdf].sort());
-    expect(m.skipped).toEqual(["gone.png"]);
+    expect(m.skipped).toEqual(["gone.png", "Guide/Drawing.excalidraw.md"]); // no drawing in it
     expect(m.objects.find((o) => o.digest === cat)).toMatchObject({ byte_size: PNG.length, content_type: "image/png", kind: "asset" });
     expect(m.objects.find((o) => o.digest === pdf)!.content_type).toBe("application/pdf");
     expect(m.homePath).toBe("Welcome.md");
@@ -278,10 +279,9 @@ describe("manifest", () => {
     expect(code).toContain("[web](https://example.com)");
     expect(code).toContain("[Local heading](#local-heading)");
 
-    // Excalidraw waits for P7, and nothing outside the selection is a page.
-    expect(m.notes).not.toContain("Guide/Drawing.excalidraw.md");
+    // Nothing outside the selection is a page.
     expect(m.notes).not.toContain("Private/Diary.md");
-    expect(m.pages.map((p) => p.position)).toEqual([0, 1, 2, 3]);
+    expect(m.pages.map((p) => p.position)).toEqual([0, 1, 2, 3, 4]);
     for (const p of m.pages) expect(p.content_markdown).not.toMatch(/obsyncian-block/);
   });
 
@@ -596,6 +596,41 @@ describe("diagrams", () => {
     const webp = m.objects.find((o) => o.content_type === "image/webp")!;
     expect(webp.byte_size).toBe(2);
     expect(m.generated.has(webp.digest)).toBe(true);
+  });
+
+  it("publishes a picked board as a page of its own, linked to and embedded by notes", async () => {
+    const scene = {
+      elements: [
+        { id: "t1", type: "text", text: "G2  и\nCapterra" },
+        { id: "t2", type: "text", text: "TrustRadius", isDeleted: true },
+        { id: "t3", type: "text", text: "Gartner" },
+      ],
+    };
+    const src = new MemorySource()
+      .note("SaaS/Отзывики.md", "See [[Карта рынка.excalidraw]] or below:\n![[Карта рынка.excalidraw]]")
+      .note("Excalidraw/Карта рынка.excalidraw.md", boardFile(scene, ""))
+      .note("Excalidraw/Raw.excalidraw", JSON.stringify({ elements: [{ id: "x", type: "ellipse" }] }));
+    const m = await buildManifest(src, sel([""]));
+
+    expect(m.notes).toEqual(["Excalidraw/Raw.excalidraw", "Excalidraw/Карта рынка.excalidraw.md", "SaaS/Отзывики.md"]);
+    expect(m.attachments).toEqual([]); // each board is listed for consent as a page
+    const boardPage = m.pages.find((p) => p.path === "Excalidraw/Карта рынка.excalidraw.md")!;
+    expect(boardPage).toMatchObject({ slug: "karta-rynka", title: "Карта рынка", nav_section: "Excalidraw", excerpt: "G2 и Capterra · Gartner" });
+    const sceneObject = m.objects.find((o) => o.source_path === "Excalidraw/Карта рынка.excalidraw.md")!;
+    expect(boardPage.content_markdown).toBe(`\`\`\`obsyncian-diagram\n{"kind":"excalidraw","scene":"${sceneObject.digest}","title":"Карта рынка","page":true}\n\`\`\`\n`);
+    expect(m.pages.find((p) => p.path === "Excalidraw/Raw.excalidraw")).toMatchObject({ slug: "raw", title: "Raw" });
+
+    // The note links to the board's page, and embeds the same scene inline.
+    const note = m.pages.find((p) => p.path === "SaaS/Отзывики.md")!.content_markdown;
+    expect(note).toContain(`[Карта рынка](${PAGE_PREFIX}karta-rynka)`);
+    expect(note).toContain(`{"kind":"excalidraw","scene":"${sceneObject.digest}","title":"Карта рынка"}`);
+    expect(m.objects.filter((o) => o.content_type === "application/json")).toHaveLength(2); // one scene per board, however often shown
+  });
+
+  it("a picked board that can't be read is a page saying so", async () => {
+    const m = await buildManifest(new MemorySource().note("Broken.excalidraw.md", "# no drawing here"), sel([""]));
+    expect(m.pages[0]).toMatchObject({ title: "Broken", content_markdown: expect.stringContaining('"scene":null') });
+    expect(m.skipped).toEqual(["Broken.excalidraw.md"]);
   });
 
   it("a board that can't be read still gets a card, saying so", async () => {

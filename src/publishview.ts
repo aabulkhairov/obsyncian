@@ -4,7 +4,7 @@
 //
 // English only, like the rest of the plugin.
 import { App, Modal, Notice, Setting, TFile, loadMermaid } from "obsidian";
-import { mermaidWithTheme } from "./publishdiagrams";
+import { isBoardPath, mermaidWithTheme } from "./publishdiagrams";
 import { ApiError, type PublishSiteInfo, type PublishSiteParams } from "./api";
 import type ObsyncPlugin from "./main";
 import {
@@ -12,7 +12,8 @@ import {
   comparePaths,
   emptySelection,
   estimateSelection,
-  isPublishableNote,
+  isPublishablePage,
+  pageName,
   isSelected,
   publishErrorMessage,
   publishSelection,
@@ -602,7 +603,7 @@ class NotePickerModal extends Modal {
       text: "Tick folders or single notes. Images and files the chosen notes show are published with them. Nothing goes online until you press Publish.",
     });
 
-    const notes = this.files.map((f) => f.path).filter(isPublishableNote);
+    const notes = this.files.map((f) => f.path).filter(isPublishablePage);
     const tree = buildTree(notes);
     const list = contentEl.createDiv({ cls: "obsync-picker-tree" });
     this.renderFolder(list, tree, 0, true);
@@ -652,7 +653,9 @@ class NotePickerModal extends Modal {
       const fileRow = children.createDiv({ cls: "obsync-picker-row" });
       fileRow.style.setProperty("--obsync-depth", String(depth + 1));
       const box = fileRow.createEl("input", { type: "checkbox" });
-      fileRow.createSpan({ text: path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/i, "") });
+      const name = path.slice(path.lastIndexOf("/") + 1);
+      if (isBoardPath(name)) fileRow.createSpan({ cls: "obsync-picker-board", text: "✎", attr: { "aria-label": "Excalidraw board" } });
+      fileRow.createSpan({ text: pageName(name) });
       box.onchange = () => this.toggle(path, box.checked);
       this.boxes.set(path, { input: box, files: [path] });
       all.push(path);

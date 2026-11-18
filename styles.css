@@ -281,3 +281,9 @@
 .obsync-publish-panel .setting-item-info { flex: 1 1 100%; }
 .obsync-publish-panel .setting-item-control { flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
 .obsync-publish-panel-bar { display: flex; justify-content: flex-end; margin-bottom: -8px; }
+
+/* An Excalidraw board in the publish picker: it becomes a page of its own. */
+.obsync-picker-board {
+  color: var(--text-muted);
+  margin-right: 2px;
+}

@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.31",
+    notes: [
+      "### ✎ Excalidraw boards as pages",
+      "Boards now show up in the Publish picker next to your notes. Tick one and it becomes a page of its own on your site — the board, full width, read-only, with zoom and full screen. A link to a board in a note leads to its page; embedding it still shows it inline.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.30",
     notes: [
       "### 📊 Diagrams on your published sites",

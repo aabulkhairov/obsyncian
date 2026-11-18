@@ -36,6 +36,7 @@ export interface BoardMarker {
   kind: "excalidraw";
   scene: string | null; // null: the board couldn't be published
   title: string;
+  page?: boolean; // the board is the whole page: shown large
 }
 
 export function diagramFence(marker: MermaidMarker | BoardMarker): string {
@@ -227,6 +228,16 @@ export function boardScene(
     files[id] = { id, mimeType: image.mimeType, asset: image.digest };
   }
   return JSON.stringify({ type: "excalidraw", version: 2, elements, appState: { viewBackgroundColor: board.viewBackgroundColor }, files });
+}
+
+// The words on a board, in drawing order: a board page's search text and
+// link preview.
+export function boardText(board: BoardSource): string {
+  return publishableElements(board.elements)
+    .filter((e) => e.type === "text" && typeof e.text === "string")
+    .map((e) => String(e.text).replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function dataUrlBytes(dataURL: string): ArrayBuffer | null {
