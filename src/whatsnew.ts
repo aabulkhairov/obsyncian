@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.34",
+    notes: [
+      "### 🧩 No more stuck files",
+      "A file that stopped syncing after its folder was excluded and included again, or after config sync was switched off and back on, now catches up by itself: Syncian fetches the newer version, merges it with your edits and uploads the result.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.33",
     notes: [
       "### 🔁 Steadier uploads",

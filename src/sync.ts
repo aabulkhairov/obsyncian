@@ -214,6 +214,9 @@ const OWN_CHANGE_TTL_MS = 60_000;
 // up to an hour, so a permanently bad one doesn't report an error per cycle.
 const RETRY_BASE_MS = 60_000;
 const RETRY_MAX_MS = 3_600_000;
+// How often a stuck version conflict may trigger a re-read of the whole
+// change feed (see SyncEngine.pull).
+const RESCAN_MIN_INTERVAL_MS = 10 * 60_000;
 // Mass-deletion guard: when at least this many indexed files, and more than a
 // third of the index, are missing locally, push refuses to delete them on the
 // server until the user confirms. "Missing" is all the engine can see — it
@@ -333,6 +336,12 @@ export class SyncEngine {
   // Revisions this device committed itself. The change signal announces
   // every commit to every device, the committer included.
   private ownRevisions = new Set<number>();
+  // file_id -> the base version the last push sent and the server rejected
+  // as stale (version_conflict). Normally the next pull brings the newer
+  // version and the conflict resolves itself; one still at the same version
+  // after that pull is stuck (see pull).
+  private conflicted = new Map<string, number>();
+  private lastRescanAt = 0;
   // Downloads this cycle that a lost connection cut off (see applyTracked).
   private interruptedIds = new Set<string>();
   // What the engine itself did to the vault, so the plugin can tell its own
@@ -491,6 +500,41 @@ export class SyncEngine {
     const fresh = this.state.cursor === 0 && Object.keys(this.state.files).length === 0;
     let skipDeletedThrough: number | undefined;
     let processed = 0;
+    await this.pullPages(report, startCursor, fresh, skipDeletedThrough, processed);
+
+    // A file whose push was rejected as stale, still at that same version
+    // after this pull, will be rejected forever: the newer version is behind
+    // the cursor already. That happens when a pull skipped the change without
+    // recording its version — the path was excluded, config sync was off, or
+    // the name was unwritable here — and the file was later edited locally.
+    // Re-read the feed from the start once; the up-to-date entries are
+    // self-echoes, the stuck ones get pulled and merged like any remote edit.
+    const stuck = [...this.conflicted].some(([id, v]) => (this.state.files[id]?.version ?? 0) === v);
+    this.conflicted.clear();
+    if (stuck && now - this.lastRescanAt >= RESCAN_MIN_INTERVAL_MS) {
+      this.lastRescanAt = now;
+      const resume = this.state.cursor;
+      this.state.cursor = 0;
+      try {
+        await this.pullPages(report, 0, false, undefined, 0);
+      } finally {
+        this.state.cursor = Math.max(this.state.cursor, resume);
+      }
+    }
+    for (const revision of this.ownRevisions) if (revision <= this.state.cursor) this.ownRevisions.delete(revision);
+
+    const retry = due.filter((p) => this.state.pending?.[p.change.file_id] === p).map((p) => p.change);
+    if (retry.length) {
+      const blobs = await this.prefetchBlobs(retry, report);
+      for (const change of retry) await this.applyTracked(change, report, blobs);
+      await this.cb.saveState();
+    }
+  }
+
+  private async pullPages(
+    report: SyncReport, startCursor: number, fresh: boolean,
+    skipDeletedThrough: number | undefined, processed: number
+  ): Promise<void> {
     for (;;) {
       const page = await this.api.changes(this.vaultId(), this.state.cursor, { fresh, skipDeletedThrough });
       if (fresh) skipDeletedThrough = page.skip_deleted_through;
@@ -526,14 +570,6 @@ export class SyncEngine {
         this.state.cursor = Math.max(this.state.cursor, page.latest_revision);
         break;
       }
-    }
-    for (const revision of this.ownRevisions) if (revision <= this.state.cursor) this.ownRevisions.delete(revision);
-
-    const retry = due.filter((p) => this.state.pending?.[p.change.file_id] === p).map((p) => p.change);
-    if (retry.length) {
-      const blobs = await this.prefetchBlobs(retry, report);
-      for (const change of retry) await this.applyTracked(change, report, blobs);
-      await this.cb.saveState();
     }
   }
 
@@ -1363,6 +1399,7 @@ export class SyncEngine {
       // Another device won the race — to this file, or to a new file at
       // this path. The next cycle pulls theirs, merges, then re-pushes.
       report.deferred.push(job.path);
+      if (e.code === "version_conflict") this.conflicted.set(job.fileId, job.entry?.version ?? 0);
       if (e.code === "path_taken" && job.entry) this.yieldPath(job.path, job.fileId);
     } else if (e instanceof ApiError && e.code === "vault_encrypting") {
       // Another device is encrypting this vault. Stop pushing; the local

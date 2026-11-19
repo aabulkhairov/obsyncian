@@ -1720,3 +1720,103 @@ describe("signed out", () => {
     expect(report?.errors).toEqual([]);
   });
 });
+
+// A pull that skips a change (excluded path, config sync off) still moves the
+// cursor past it. If the file is then edited here, every push is rejected as
+// stale and no later pull brings the newer version: the file stopped syncing
+// in both directions, re-uploading its blob every cycle (seen on 1.0.11 as a
+// version_conflict loop every 15 s).
+describe("stuck version conflicts", () => {
+  function countFullReads(server: FakeApi) {
+    const calls = { full: 0 };
+    const orig = server.changes.bind(server);
+    server.changes = async (vaultId, since, opts) => {
+      if (since === 0) calls.full++;
+      return orig(vaultId, since, opts);
+    };
+    return calls;
+  }
+
+  it("re-reads the change feed when a push keeps conflicting after an excluded folder comes back", async () => {
+    const { server, a, b } = setup();
+    a.vault.write("Work/n.md", "base");
+    await a.engine.sync();
+    await b.engine.sync();
+
+    b.excluded.push("Work");
+    a.vault.write("Work/n.md", "line from A");
+    await a.engine.sync();
+    await b.engine.sync(); // skipped: excluded
+
+    b.excluded.length = 0;
+    b.vault.write("Work/n.md", "base\nline from B");
+    const calls = countFullReads(server);
+    const first = await b.engine.sync();
+    expect(first?.deferred).toEqual(["Work/n.md"]);
+
+    const second = await b.engine.sync();
+    expect(calls.full).toBe(1);
+    expect(second?.deferred).toEqual([]);
+    expect(second?.pushed).toBe(1);
+
+    await a.engine.sync();
+    expect(a.vault.snapshot()).toEqual(b.vault.snapshot());
+    const text = b.vault.snapshot()["Work/n.md"];
+    expect(text).toContain("line from A");
+    expect(text).toContain("line from B");
+  });
+
+  it("recovers a config file edited after config sync was turned on", async () => {
+    const { a, b } = setup();
+    a.flags.syncConfig = true;
+    b.flags.syncConfig = true;
+    a.config.put(".obsidian/snippets/x.css", "a {}");
+    await a.engine.sync();
+    await b.engine.sync();
+
+    b.flags.syncConfig = false;
+    a.config.put(".obsidian/snippets/x.css", "a { color: red }");
+    await a.engine.sync();
+    await b.engine.sync(); // skipped: config sync off
+
+    b.flags.syncConfig = true;
+    b.config.put(".obsidian/snippets/x.css", "a { color: blue }");
+    await b.engine.sync();
+    await b.engine.sync();
+    const settled = await b.engine.sync();
+    expect(settled?.deferred).toEqual([]);
+
+    await a.engine.sync();
+    expect(a.config.readText(".obsidian/snippets/x.css")).toBe(b.config.readText(".obsidian/snippets/x.css"));
+  });
+
+  it("does not re-read the feed for an ordinary race the next pull resolves", async () => {
+    const { server, a, b } = setup();
+    a.vault.write("Note.md", "base");
+    await a.engine.sync();
+    await b.engine.sync();
+    await a.engine.sync(); // A's cursor catches up with its own first commit
+    const calls = countFullReads(server);
+
+    b.vault.write("Note.md", "base\nB");
+    // A commits between B's pull and B's push.
+    const origCommit = server.commit.bind(server);
+    const origBatch = server.commitBatch.bind(server);
+    let raced = false;
+    const race = async () => {
+      if (raced) return;
+      raced = true;
+      a.vault.write("Note.md", "A\nbase");
+      await a.engine.sync();
+    };
+    server.commit = async (...args: Parameters<FakeApi["commit"]>) => { await race(); return origCommit(...args); };
+    server.commitBatch = async (...args: Parameters<FakeApi["commitBatch"]>) => { await race(); return origBatch(...args); };
+    const first = await b.engine.sync();
+    server.commit = origCommit;
+    server.commitBatch = origBatch;
+    expect(first?.deferred).toEqual(["Note.md"]);
+    const second = await b.engine.sync();
+    expect(second?.pushed).toBe(1);
+    expect(calls.full).toBe(0);
+  });
+});
