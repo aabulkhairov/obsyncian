@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.36",
+    notes: [
+      "### ⚡ Faster site updates with diagrams",
+      "Unchanged Mermaid diagrams are no longer uploaded again every time you press **Update publication** — only what actually changed goes up. The first update after installing this re-sends diagrams once; after that they're skipped.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.35",
     notes: [
       "### ✏️ See what changed before you update a site",

@@ -249,3 +249,17 @@ export function dataUrlBytes(dataURL: string): ArrayBuffer | null {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes.buffer;
 }
+
+// The id Mermaid draws a diagram under ends up all over its SVG (the <svg>
+// id, every scoped style rule, marker ids). A random one made every publish
+// produce new bytes, so every diagram was re-uploaded on every update and
+// the previous copies purged. Derived from the code and theme instead: the
+// same diagram draws to the same bytes and the server already has it.
+export function mermaidRenderId(code: string, theme: "light" | "dark"): string {
+  let h = 0x811c9dc5; // FNV-1a, 32-bit
+  for (let i = 0; i < code.length; i++) {
+    h ^= code.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `obsyncian-publish-${theme}-${h.toString(36)}`;
+}

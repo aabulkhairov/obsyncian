@@ -4,7 +4,7 @@
 //
 // English only, like the rest of the plugin.
 import { App, Modal, Notice, Setting, TFile, loadMermaid } from "obsidian";
-import { isBoardPath, mermaidWithTheme } from "./publishdiagrams";
+import { isBoardPath, mermaidRenderId, mermaidWithTheme } from "./publishdiagrams";
 import { ApiError, type PublishSiteInfo, type PublishSiteParams } from "./api";
 import type ObsyncPlugin from "./main";
 import {
@@ -58,7 +58,7 @@ export function obsidianSource(app: App): PublishSource {
     renderMermaid: async (code) => {
       const mermaid = await loadMermaid();
       const draw = async (theme: "light" | "dark"): Promise<string> => {
-        const id = `obsyncian-publish-${theme}-${Math.random().toString(36).slice(2)}`;
+        const id = mermaidRenderId(code, theme);
         try {
           const { svg } = (await mermaid.render(id, mermaidWithTheme(code, theme))) as { svg: string };
           return svg;

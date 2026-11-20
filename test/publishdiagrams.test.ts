@@ -2,8 +2,7 @@ import LZString from "lz-string";
 import { describe, expect, it } from "vitest";
 import {
   boardScene, dataUrlBytes, diagramFence, mermaidWithTheme, mermaidSources, mermaidType, parseBoard,
-  publishableElements, replaceMermaid, standaloneSvg, type MermaidMarker,
-} from "../src/publishdiagrams";
+  publishableElements, replaceMermaid, standaloneSvg, type MermaidMarker, mermaidRenderId } from "../src/publishdiagrams";
 
 const FLOW = "flowchart LR\n  A[Лид] --> B{Ответил?}";
 
@@ -108,5 +107,24 @@ describe("excalidraw boards", () => {
     expect(new Uint8Array(dataUrlBytes("data:image/png;base64,AAEC")!)).toEqual(new Uint8Array([0, 1, 2]));
     expect(new TextDecoder().decode(dataUrlBytes("data:image/svg+xml,%3Csvg%2F%3E")!)).toBe("<svg/>");
     expect(dataUrlBytes("https://x")).toBeNull();
+  });
+});
+
+describe("mermaidRenderId", () => {
+  it("is the same for the same diagram and theme, so a redraw gives the same bytes", () => {
+    expect(mermaidRenderId("graph TD; A-->B", "light")).toBe(mermaidRenderId("graph TD; A-->B", "light"));
+  });
+
+  it("differs between diagrams and between themes", () => {
+    const ids = new Set([
+      mermaidRenderId("graph TD; A-->B", "light"),
+      mermaidRenderId("graph TD; A-->B", "dark"),
+      mermaidRenderId("graph TD; A-->C", "light"),
+    ]);
+    expect(ids.size).toBe(3);
+  });
+
+  it("is a valid element id", () => {
+    expect(mermaidRenderId("sequenceDiagram\n A->>B: hi", "dark")).toMatch(/^[a-z][a-z0-9-]*$/);
   });
 });
