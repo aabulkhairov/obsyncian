@@ -283,6 +283,16 @@
 .obsync-publish-panel-bar { display: flex; justify-content: flex-end; margin-bottom: -8px; }
 
 /* An Excalidraw board in the publish picker: it becomes a page of its own. */
+.obsync-picker-change {
+  margin-left: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-accent);
+}
+
+.obsync-picker-change.is-new {
+  color: var(--color-green);
+}
+
 .obsync-picker-board {
   color: var(--text-muted);
   margin-right: 2px;

@@ -722,6 +722,42 @@ export function estimateSelection(
   return { notes, images, attachments: attached.size, bytes };
 }
 
+// --- changes since the last publish ----------------------------------------
+
+// Every update re-sends every selected note, so an edit always goes up; this
+// only tells the author which ones will look different. "edited": saved
+// after the site was last published (the site's time, not this device's, so
+// it also holds when the last publish came from another device). "new":
+// selected but not yet agreed to, so not on the site. A site never
+// published has nothing to compare against and gets no markers.
+export type PageChange = "edited" | "new";
+
+export function changesSincePublish(
+  files: Pick<SourceFile, "path" | "mtime">[],
+  sel: PublishSelection,
+  lastPublishedAt: string | null,
+  consented: string[]
+): Map<string, PageChange> {
+  const changes = new Map<string, PageChange>();
+  const since = lastPublishedAt ? Date.parse(lastPublishedAt) : NaN;
+  if (Number.isNaN(since)) return changes;
+  const agreed = new Set(consented);
+  for (const f of files) {
+    if (!isPublishablePage(f.path) || !isSelected(sel, f.path)) continue;
+    if (!agreed.has(f.path)) changes.set(f.path, "new");
+    else if (f.mtime > since) changes.set(f.path, "edited");
+  }
+  return changes;
+}
+
+export function describeChanges(changes: Map<string, PageChange>): string {
+  let edited = 0;
+  let added = 0;
+  for (const c of changes.values()) c === "edited" ? edited++ : added++;
+  const parts = [edited ? `${edited} edited` : "", added ? `${added} new` : ""].filter(Boolean);
+  return parts.length ? `${parts.join(", ")} since the last update` : "";
+}
+
 // --- consent ----------------------------------------------------------------
 
 // Paths (notes and attachments) the author has agreed to make public for a

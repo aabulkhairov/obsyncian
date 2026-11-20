@@ -22,6 +22,8 @@ import {
   type PublishManifest,
   type PublishSelection,
   type PublishSource,
+  changesSincePublish,
+  describeChanges,
 } from "./publish";
 import type { PublishSiteLocal } from "./settings";
 import { formatBytes } from "./util";
@@ -271,7 +273,10 @@ export class PublishSettingsSection {
     const selected = hasSelection(local.selection)
       ? (() => {
           const est = this.estimate(local.selection);
-          return `${est.notes} note${est.notes === 1 ? "" : "s"} selected`;
+          const changed = describeChanges(
+            changesSincePublish(obsidianSource(this.plugin.app).files(), local.selection, site.last_published_at, local.consented)
+          );
+          return `${est.notes} note${est.notes === 1 ? "" : "s"} selected${changed ? ` · ${changed}` : ""}`;
         })()
       : "No notes chosen yet.";
     const actions = new Setting(containerEl).setDesc(selected);
@@ -583,7 +588,7 @@ class NotePickerModal extends Modal {
   // holding the window — which then broke counting, and saving it made every
   // later settings save throw "circular structure".
   private picked: PublishSelection;
-  private boxes = new Map<string, { input: HTMLInputElement; files: string[] }>();
+  private boxes = new Map<string, { input: HTMLInputElement; files: string[]; badge: HTMLElement }>();
   private totalsEl!: HTMLElement;
   private files: ReturnType<PublishSource["files"]>;
 
@@ -640,6 +645,7 @@ class NotePickerModal extends Modal {
     const caret = row.createSpan({ cls: "obsync-picker-caret", text: open ? "▾" : "▸" });
     const input = row.createEl("input", { type: "checkbox" });
     row.createSpan({ text: folder.path === "" ? `${this.plugin.app.vault.getName()} (whole vault)` : folder.name });
+    const folderBadge = row.createSpan({ cls: "obsync-picker-change" });
     const children = parent.createDiv({ cls: "obsync-picker-children" });
     if (!open) children.hide();
     caret.onclick = () => {
@@ -656,13 +662,14 @@ class NotePickerModal extends Modal {
       const name = path.slice(path.lastIndexOf("/") + 1);
       if (isBoardPath(name)) fileRow.createSpan({ cls: "obsync-picker-board", text: "✎", attr: { "aria-label": "Excalidraw board" } });
       fileRow.createSpan({ text: pageName(name) });
+      const badge = fileRow.createSpan({ cls: "obsync-picker-change" });
       box.onchange = () => this.toggle(path, box.checked);
-      this.boxes.set(path, { input: box, files: [path] });
+      this.boxes.set(path, { input: box, files: [path], badge });
       all.push(path);
     }
 
     input.onchange = () => this.toggle(folder.path, input.checked);
-    this.boxes.set(`${folder.path}/`, { input, files: all });
+    this.boxes.set(`${folder.path}/`, { input, files: all, badge: folderBadge });
     return all;
   }
 
@@ -681,17 +688,27 @@ class NotePickerModal extends Modal {
   }
 
   private paintSelection(): void {
-    for (const { input, files } of this.boxes.values()) {
+    const local = localFor(this.plugin, this.site.id);
+    const changes = changesSincePublish(this.files, this.picked, this.site.last_published_at, local.consented);
+    for (const [key, { input, files, badge }] of this.boxes) {
       const picked = files.filter((p) => isSelected(this.picked, p)).length;
       input.checked = files.length > 0 && picked === files.length;
       input.indeterminate = picked > 0 && picked < files.length;
+      if (key.endsWith("/")) {
+        const changed = files.filter((p) => changes.has(p)).length;
+        badge.setText(changed ? `${changed} changed` : "");
+      } else {
+        badge.setText(changes.get(key) ?? "");
+        badge.toggleClass("is-new", changes.get(key) === "new");
+      }
     }
     const est = estimateSelection(this.files, this.picked, (path) => Object.keys(this.plugin.app.metadataCache.resolvedLinks[path] ?? {}));
     const others = est.attachments - est.images;
     this.totalsEl.setText(
       `${est.notes} note${est.notes === 1 ? "" : "s"} · ${est.images} image${est.images === 1 ? "" : "s"}` +
         (others ? ` · ${others} other file${others === 1 ? "" : "s"}` : "") +
-        ` · about ${formatBytes(est.bytes)}`
+        ` · about ${formatBytes(est.bytes)}` +
+        (describeChanges(changes) ? ` · ${describeChanges(changes)}` : "")
     );
   }
 

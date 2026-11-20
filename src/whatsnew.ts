@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.35",
+    notes: [
+      "### ✏️ See what changed before you update a site",
+      "In **Choose notes…**, notes you've edited since the site was last updated are marked **edited**, and ticked notes that aren't on the site yet are marked **new**. Folders show how many changed inside, and the site card sums it up, so you know what **Update publication** will refresh.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.34",
     notes: [
       "### 🧩 No more stuck files",

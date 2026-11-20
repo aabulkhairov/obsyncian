@@ -26,8 +26,7 @@ import {
   stripFrontmatter,
   type PublishSelection,
   type PublishSource,
-  type SourceFile,
-} from "../src/publish";
+  type SourceFile, changesSincePublish, describeChanges } from "../src/publish";
 import { buildTree } from "../src/publishview";
 import { sha256Hex } from "../src/util";
 import { FakePublishApi } from "./fake-publish-api";
@@ -640,5 +639,30 @@ describe("diagrams", () => {
     const m = await buildManifest(src, sel(["Notes"]));
     expect(m.pages[0].content_markdown).toContain('{"kind":"excalidraw","scene":null,"title":"Broken"}');
     expect(m.skipped).toContain("Broken.excalidraw.md");
+  });
+});
+
+describe("changes since the last publish", () => {
+  const at = "2026-11-20T07:00:00.000Z";
+  const t = Date.parse(at);
+  const files = [
+    { path: "Club/Before.md", mtime: t - 60_000 },
+    { path: "Club/After.md", mtime: t + 60_000 },
+    { path: "Club/Added.md", mtime: t - 60_000 },
+    { path: "Club/pic.png", mtime: t + 60_000 },
+    { path: "Other/After.md", mtime: t + 60_000 },
+  ];
+  const sel = { include: ["Club"], exclude: [] };
+  const consented = ["Club/Before.md", "Club/After.md", "Club/pic.png"];
+
+  it("marks selected notes saved after the publish as edited and unpublished ones as new", () => {
+    const changes = changesSincePublish(files, sel, at, consented);
+    expect([...changes]).toEqual([["Club/After.md", "edited"], ["Club/Added.md", "new"]]);
+    expect(describeChanges(changes)).toBe("1 edited, 1 new since the last update");
+  });
+
+  it("has nothing to say about a site that was never published", () => {
+    expect(changesSincePublish(files, sel, null, []).size).toBe(0);
+    expect(describeChanges(new Map())).toBe("");
   });
 });
