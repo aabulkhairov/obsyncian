@@ -12,7 +12,7 @@
 
 🔐 **We can't read your notes.** Set an encryption passphrase when linking your vault (strongly recommended) and file contents **and file names** are encrypted on your device — AES-256-GCM with a PBKDF2-derived key (600k iterations) — before anything is uploaded. Our servers and storage only ever see ciphertext and random IDs. Without a passphrase, sync works but data is stored unencrypted.
 
-🛟 **Your notes can't be silently lost.** Every change is version-checked on the server, so two devices can never overwrite each other. If you edit the same note in two places, you get *both* versions — one saved next to the original as `Name (conflict 2026-07-04 1130).md`. Deletes are reversible tombstones with version history retained for 30–90 days.
+🛟 **Your notes can't be silently lost.** Every change is version-checked on the server, so two devices can never overwrite each other. If you edit the same note in two places, edits that don't overlap are merged into one note; when they touch the very same words you get *both* versions — one saved next to the original as `Name (conflict 2026-07-04 1130).md`. Deletes are tombstones rather than instant erasure, and replaced file versions are kept on the server for 30 days.
 
 ⚡️ **Zero setup.** Install → get a login code from our Telegram bot → set a passphrase → done. No VPS, no SSH keys, no CouchDB, no cloud-storage accounts to wire up.
 
@@ -37,7 +37,7 @@ Sync runs automatically on file changes and on an interval. Commands: **Sync now
 Your synced data becomes unrecoverable — that's the flip side of real end-to-end encryption. Your local files are untouched; reset and re-sync with a new passphrase.
 
 **What about conflicts?**
-Nothing is merged and nothing is lost: the losing version is written next to the file as a conflict copy. Same model as official Obsidian Sync.
+Nothing is lost. By default, edits to different parts of a note are merged automatically; when two devices change the same words, the losing version is written next to the file as a conflict copy. Prefer a copy every time? Set **Conflict resolution** to **Create conflict file** in the plugin settings.
 
 **How is it cheaper than alternatives?**
 Architecture: encrypted file bytes travel directly between your device and object storage via short-lived signed URLs — they never pass through our servers. That's radically cheaper to run, and the price reflects it.
