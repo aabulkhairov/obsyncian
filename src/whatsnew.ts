@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.38",
+    notes: [
+      "### 🧭 A clear message when a vault's cloud copy is gone",
+      "If the cloud copy of a vault no longer exists — you deleted the vault from the bot or another device, or it was removed after a plan ended — Syncian used to show a sync error every few minutes. It now says so once, leaves **every note on this device untouched**, and unlinks the vault. To sync again, open **Settings → Syncian** and create the vault again: your notes upload from this device.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.37",
     notes: [
       "### 🔁 Notes with ? or : in their names keep syncing",

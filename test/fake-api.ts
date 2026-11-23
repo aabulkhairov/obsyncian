@@ -79,7 +79,8 @@ export class FakeApi {
   async listVaults(): Promise<{ vaults: VaultInfo[] }> {
     this.store("1");
     const targets = new Set([...this.vaults.values()].map((v) => v.encryptingInto).filter(Boolean));
-    return { vaults: [...this.vaults.keys()].filter((id) => !targets.has(id)).map((id) => this.info(id)) };
+    if (this.paymentRequired) throw new ApiError(402, "payment_required", "Syncing needs an active plan.");
+    return { vaults: [...this.vaults.keys()].filter((id) => !targets.has(id) && !this.gone.has(id)).map((id) => this.info(id)) };
   }
 
   async createVault(name: string, keyCheck?: string): Promise<VaultInfo> {
@@ -131,6 +132,9 @@ export class FakeApi {
   // Test hook: simulates the vault owner being out of storage. When true, any
   // non-delete commit is rejected the way CommitFileChange does at quota.
   quotaExceeded = false;
+  // Test hook: vaults the server no longer has (deleted, or removed after
+  // the plan lapsed). Asking about one is a 404, and it leaves the vault list.
+  gone = new Set<string>();
   // Test hook: the account has no active plan. The server gates every sync
   // endpoint, so this rejects from the very first call of a cycle.
   paymentRequired = false;
@@ -157,6 +161,7 @@ export class FakeApi {
     if (this.paymentRequired) {
       throw new ApiError(402, "payment_required", "Syncing needs an active plan.");
     }
+    if (this.gone.has(vaultId)) throw new ApiError(404, "not_found", "Not found.");
     const vault = this.store(vaultId);
     const skip = this.legacy ? undefined
       : opts.skipDeletedThrough ?? (opts.fresh && since === 0 ? vault.latestRevision : undefined);

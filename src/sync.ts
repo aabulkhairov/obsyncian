@@ -115,6 +115,10 @@ export interface SyncReport {
   // path_taken). Not errors: the next cycle pulls the other side, merges and
   // pushes again.
   deferred: string[];
+  // The server no longer has this vault: it was deleted from another device
+  // or the bot, or its cloud copy was removed after the plan lapsed. Nothing
+  // on this device is touched; the plugin stops syncing it and says so.
+  vaultGone: boolean;
   // The account has no active plan (server said payment_required). Like
   // quotaBlocked this is a billing state, not a bug: it must pause sync
   // rather than retry, or every cycle re-reports the same rejection — the
@@ -405,7 +409,7 @@ export class SyncEngine {
   async sync(): Promise<SyncReport | null> {
     if (this.running) return null;
     this.running = true;
-    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], reportable: [], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false, vaultFrozen: false, vaultReplaced: null };
+    const report: SyncReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [], reportable: [], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, vaultGone: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false, vaultFrozen: false, vaultReplaced: null };
     this.interruptedIds.clear();
     const decision = this.heldDecision;
     this.heldDecision = null;
@@ -460,6 +464,16 @@ export class SyncEngine {
           this.cb.onStatus("vault encrypted — passphrase needed");
           return report;
         }
+      }
+      // The vault is gone from the server. Confirmed against the account's
+      // vault list first, so a 404 from anything else in the cycle can never
+      // be mistaken for it. The local files are left exactly as they are:
+      // a missing vault is not a deletion of its notes.
+      if (e instanceof ApiError && e.status === 404 && (await this.vaultIsGone())) {
+        report.vaultGone = true;
+        this.running = false;
+        this.cb.onStatus("cloud copy removed — your notes are safe here");
+        return report;
       }
       // No connection at all: same as a transfer cut short, for the whole
       // cycle. Nothing is wrong; the plugin tries again once it's back.
@@ -1138,6 +1152,18 @@ export class SyncEngine {
     if (base === null || local === null || remote === null) return null;
     const { text, conflict } = merge3Markers(base, local, remote);
     return { bytes: new TextEncoder().encode(text).buffer, conflict };
+  }
+
+  // True only when the server answers and this vault is not among the
+  // account's vaults. Any failure to find out counts as "not known to be
+  // gone", which falls through to an ordinary, retried error.
+  private async vaultIsGone(): Promise<boolean> {
+    try {
+      const { vaults } = await this.api.listVaults();
+      return !vaults.some((v) => String(v.id) === String(this.vaultId()));
+    } catch {
+      return false;
+    }
   }
 
   private async applyRemoteDelete(change: ChangeRecord, entry: IndexEntry | undefined, report: SyncReport): Promise<void> {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FakeApi } from "./fake-api";
+import { ApiError } from "../src/api";
 import { makeClient } from "./helpers";
 import { conflictPath } from "../src/util";
 import { PlainCodec } from "../src/codec";
@@ -620,6 +621,122 @@ describe("re-linking a vault", () => {
     const state: SyncState = { cursor: 7, files: { f1: FAKE_ENTRY }, vaultId: "1" };
     expect(adoptVaultState(state, "")).toBe(false);
     expect(state).toEqual({ cursor: 0, files: {}, vaultId: undefined });
+  });
+});
+
+// The server's copy of a vault can disappear: the owner deleted it from the
+// bot or another device, or it was removed after a trial ended unpaid. That
+// is not a deletion of the notes. The one thing the plugin must never do
+// here is treat "the vault is gone" as "your files were deleted".
+describe("the vault no longer exists on the server", () => {
+  const NOTES = { "Note.md": "hello", "Deep/Idea.md": "nested", "Daily/2026-11-23.md": "today" };
+
+  function synced() {
+    const { server, a, b } = setup();
+    for (const [path, text] of Object.entries(NOTES)) a.vault.write(path, text);
+    return { server, a, b };
+  }
+
+  it("stops, flags it, and leaves every local file exactly as it was", async () => {
+    const { server, a } = synced();
+    await a.engine.sync();
+    server.gone.add("1");
+
+    const report = await a.engine.sync();
+
+    expect(report?.vaultGone).toBe(true);
+    expect(report?.errors).toEqual([]);
+    expect(report?.deletedLocal).toBe(0);
+    expect(a.vault.snapshot()).toEqual(NOTES);
+  });
+
+  it("keeps the files on a second device that never saw the deletion coming", async () => {
+    const { server, a, b } = synced();
+    await a.engine.sync();
+    await b.engine.sync();
+    b.vault.write("Note.md", "edited on B after the last sync");
+    server.gone.add("1");
+
+    const report = await b.engine.sync();
+
+    expect(report?.vaultGone).toBe(true);
+    expect(report?.deletedLocal).toBe(0);
+    expect(b.vault.snapshot()).toEqual({ ...NOTES, "Note.md": "edited on B after the last sync" });
+  });
+
+  it("does not mistake a 404 from elsewhere in the cycle for a missing vault", async () => {
+    const { server, a } = synced();
+    await a.engine.sync();
+    server.changes = async () => { throw new ApiError(404, "not_found", "Not found."); };
+
+    // An ordinary failure: it surfaces as an error and is retried next cycle.
+    await expect(a.engine.sync()).rejects.toThrow("Not found.");
+    expect(a.vault.snapshot()).toEqual(NOTES);
+  });
+
+  it("does not call it gone when the vault list can't be fetched to confirm", async () => {
+    const { server, a } = synced();
+    await a.engine.sync();
+    server.gone.add("1");
+    server.listVaults = async () => { throw new Error("network down"); };
+
+    await expect(a.engine.sync()).rejects.toThrow("Not found.");
+    expect(a.vault.snapshot()).toEqual(NOTES);
+  });
+
+  // What Settings does after the plugin unlinks: the vault is created again
+  // (or, on a second device, picked from the list) and the index is pointed
+  // at it — adoptVaultState clears it, main.ts clears the shadow bases.
+  async function relink(client: ReturnType<typeof makeClient>, vaultId: string) {
+    adoptVaultState(client.state, vaultId);
+    for (const id of await client.base.list()) await client.base.remove(id);
+    client.vaultRef.id = vaultId;
+  }
+
+  it("uploads the notes from the device when the vault is created again, deleting nothing", async () => {
+    const { server, a } = synced();
+    await a.engine.sync();
+    server.gone.add("1");
+    await a.engine.sync();
+
+    const again = String((await server.createVault("My notes")).id);
+    await relink(a, again);
+    const report = await a.engine.sync();
+
+    expect(report?.errors).toEqual([]);
+    expect(report?.pushed).toBe(3);
+    expect(report?.deletedLocal).toBe(0);
+    expect(report?.deletedRemote).toBe(0);
+    expect(a.vault.snapshot()).toEqual(NOTES);
+    expect([...server.store(again).entries.values()].filter((e) => !e.deleted).length).toBe(3);
+  });
+
+  it("brings a second device back without losing either side of a note that diverged", async () => {
+    const { server, a, b } = synced();
+    await a.engine.sync();
+    await b.engine.sync();
+    a.vault.write("Note.md", "A kept writing");
+    b.vault.write("Note.md", "B kept writing");
+    b.vault.write("Only-on-B.md", "written while sync was paused");
+    server.gone.add("1");
+    await a.engine.sync();
+    await b.engine.sync();
+
+    const again = String((await server.createVault("My notes")).id);
+    await relink(a, again);
+    await a.engine.sync();
+    await relink(b, again);
+    const report = await b.engine.sync();
+    await a.engine.sync();
+
+    expect(report?.deletedLocal).toBe(0);
+    const onB = b.vault.snapshot();
+    const texts = Object.values(onB);
+    expect(texts).toContain("A kept writing");
+    expect(texts).toContain("B kept writing");
+    expect(onB["Only-on-B.md"]).toBe("written while sync was paused");
+    expect(onB["Deep/Idea.md"]).toBe("nested");
+    expect(Object.values(a.vault.snapshot())).toContain("written while sync was paused");
   });
 });
 

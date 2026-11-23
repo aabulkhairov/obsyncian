@@ -330,6 +330,10 @@ export default class ObsyncPlugin extends Plugin {
         await this.signedOut();
         return;
       }
+      if (report?.vaultGone) {
+        await this.vaultGone();
+        return;
+      }
       if (report) {
         const due = noteConnectivity(this.settings, report, Date.now(), hostOf(this.settings.serverUrl));
         if (due) this.reportError("connectivity", due);
@@ -392,7 +396,7 @@ export default class ObsyncPlugin extends Plugin {
     } catch (e) {
       this.pendingSyncErrorStreak++;
       console.error("[obsync] sync failed:", e);
-      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false, vaultFrozen: false, vaultReplaced: null };
+      this.lastReport = { pulled: 0, pushed: 0, deletedLocal: 0, deletedRemote: 0, conflicts: 0, merged: 0, renamed: 0, errors: [String(e)], reportable: [String(e)], deferred: [], unwritablePaths: [], quotaBlocked: false, paymentRequired: false, vaultGone: false, heldDeletions: 0, interrupted: 0, offline: false, signedOut: false, vaultFrozen: false, vaultReplaced: null };
       this.lastReportAt = Date.now();
       // The first frames say where an unexpected failure (a TypeError, not
       // a refusal from the server) came from; file names never appear in them.
@@ -466,6 +470,27 @@ export default class ObsyncPlugin extends Plugin {
     await this.savePersisted();
     new Notice("Syncian: your plan is active — sync resumed.");
     void this.syncNow(true);
+  }
+
+  // The vault this device syncs no longer exists on the server. Unlink it —
+  // the same thing the Unlink button does, and nothing more: every note stays
+  // on this device. Settings then shows the link screen, where creating a
+  // vault uploads the notes from here. Said once, not on every cycle.
+  private async vaultGone(): Promise<void> {
+    this.signal.stop();
+    this.settings.needsPassphrase = false;
+    this.settings.vaultId = "";
+    this.settings.vaultName = "";
+    this.settings.vaultKeyCheck = "";
+    this.invalidateCodec();
+    await this.savePersisted();
+    this.setStatus("cloud copy removed — your notes are safe here");
+    this.refreshViews();
+    new Notice(
+      "Syncian: the cloud copy of this vault no longer exists — it was deleted, or removed after the plan ended. " +
+        "Your notes on this device are untouched. To sync again, open Settings → Syncian and create the vault again: your notes upload from here.",
+      0
+    );
   }
 
   // The server stopped accepting this device's login. Log out the same way
