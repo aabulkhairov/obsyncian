@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.37",
+    notes: [
+      "### 🔁 Notes with ? or : in their names keep syncing",
+      "A note whose name contains a character like **?** or **:** (possible on Mac, iPhone and Linux) could stop syncing once it was edited on two devices: every upload was turned away and Syncian kept retrying in the background. Such notes now pull, merge and upload like any other, as long as the file already exists on the device.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.36",
     notes: [
       "### ⚡ Faster site updates with diagrams",

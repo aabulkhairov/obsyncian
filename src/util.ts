@@ -49,6 +49,13 @@ export function hasForbiddenNameChars(path: string): boolean {
   return /[\\:*?"<>|]/.test(path);
 }
 
+// The same path with the forbidden characters taken out of the file name, for
+// a file this device is about to create next to one it could only inherit.
+export function creatableName(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return path.slice(0, slash + 1) + path.slice(slash + 1).replace(/[\\:*?"<>|]/g, "_");
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];

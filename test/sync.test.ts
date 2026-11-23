@@ -707,6 +707,65 @@ describe("forbidden file names", () => {
   });
 });
 
+describe("forbidden names that already exist on this device", () => {
+  it("merges a remote edit into a locally edited file instead of conflicting forever", async () => {
+    const { a, b } = setup();
+    a.vault.write("Is this for me?.md", "base");
+    await a.engine.sync();
+    b.vault.write("Is this for me?.md", "base"); // same file, made outside Obsidian here too
+    await b.engine.sync();
+    await b.engine.sync();
+
+    a.vault.write("Is this for me?.md", "base\nline from A");
+    await a.engine.sync();
+    b.vault.write("Is this for me?.md", "line from B\nbase");
+    await b.engine.sync();
+    const settled = await b.engine.sync();
+    expect(settled?.deferred).toEqual([]);
+    expect(settled?.errors).toEqual([]);
+    expect(settled?.unwritablePaths).toEqual([]);
+
+    await a.engine.sync();
+    expect(a.vault.snapshot()).toEqual(b.vault.snapshot());
+    const text = b.vault.read("Is this for me?.md");
+    expect(text).toContain("line from A");
+    expect(text).toContain("line from B");
+  });
+
+  it("adopts the server's file rather than re-uploading its own copy under a new id each cycle", async () => {
+    const { server, a, b } = setup();
+    a.vault.write("What is this book about?.md", "chapter one");
+    await a.engine.sync();
+    b.vault.write("What is this book about?.md", "chapter one\nchapter two");
+
+    await b.engine.sync();
+    const settled = await b.engine.sync();
+    expect(settled?.deferred).toEqual([]);
+    expect(settled?.errors).toEqual([]);
+    const ids = Object.entries(b.engine.state.files).filter(([, e]) => e.path === "What is this book about?.md");
+    expect(ids.length).toBe(1);
+
+    await a.engine.sync();
+    expect(a.vault.snapshot()).toEqual(b.vault.snapshot());
+    expect(a.vault.read("What is this book about?.md")).toContain("chapter two");
+  });
+
+  it("gives a conflict copy a name Obsidian will create", async () => {
+    const { a, b } = setup();
+    a.flags.conflictMode = "conflictFile";
+    b.flags.conflictMode = "conflictFile";
+    a.vault.write("Why?.md", "from A");
+    await a.engine.sync();
+    b.vault.write("Why?.md", "from B, nothing in common");
+
+    const report = await b.engine.sync();
+    expect(report?.errors).toEqual([]);
+    expect(report?.conflicts).toBe(1);
+    const names = Object.keys(b.vault.snapshot());
+    expect(names.some((n) => /^Why_ \(conflict .*\)\.md$/.test(n))).toBe(true);
+  });
+});
+
 describe("remote changes that fail to apply", () => {
   function failDownloads(server: FakeApi) {
     const real = server.getBlob.bind(server);

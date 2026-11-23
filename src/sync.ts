@@ -4,7 +4,7 @@ import { BaseStore } from "./basestore";
 import { ConfigStore } from "./configstore";
 import { Codec } from "./codec";
 import { isMergeablePath, merge3Markers, mergeJson, mergeUnion, tryDecodeUtf8 } from "./merge";
-import { conflictPath, dirname, hasForbiddenNameChars, sha256Hex } from "./util";
+import { conflictPath, creatableName, dirname, hasForbiddenNameChars, sha256Hex } from "./util";
 
 export interface IndexEntry {
   path: string;
@@ -714,7 +714,7 @@ export class SyncEngine {
       // bandwidth fetching their blobs (the change is skipped and the cursor
       // advances regardless).
       if (this.configStore.owns(path) && !this.cb.syncConfig()) continue;
-      if (hasForbiddenNameChars(path)) {
+      if (this.unwritableHere(normalizePath(path))) {
         if (!report.unwritablePaths.includes(path)) report.unwritablePaths.push(path);
       } else {
         need.push(c);
@@ -799,6 +799,17 @@ export class SyncEngine {
     if (standing !== undefined && after && after.path === path) after.serverPath = standing;
   }
 
+  // A name Obsidian won't create can't be written on this device — unless the
+  // file is already here under that very name (made in Finder, say, on a
+  // system that allows it). Then there is nothing to create: the change is an
+  // update to a file we have, and skipping it would leave the index behind the
+  // server for good — every local edit rejected as stale, or, for a file not
+  // indexed yet, re-uploaded under a new id each cycle and refused as a
+  // duplicate path.
+  private unwritableHere(path: string): boolean {
+    return hasForbiddenNameChars(path) && !(this.app.vault.getAbstractFileByPath(path) instanceof TFile);
+  }
+
   private async applyRemoteContent(
     change: ChangeRecord,
     entry: IndexEntry | undefined,
@@ -818,7 +829,7 @@ export class SyncEngine {
     if (isExcluded(path, this.cb.excludes())) return;
     // Covers the paths prefetch already skipped, plus renames TO a
     // forbidden name (which need no blob but would still fail to write).
-    if (hasForbiddenNameChars(path)) {
+    if (this.unwritableHere(path)) {
       if (!report.unwritablePaths.includes(path)) report.unwritablePaths.push(path);
       return;
     }
@@ -972,7 +983,9 @@ export class SyncEngine {
 
     // Keep the local file (it will be pushed as the next version), park the
     // remote version in a conflict copy.
-    const copy = normalizePath(conflictPath(path));
+    // The copy is a new file, so its name has to be one Obsidian will create
+    // even when the original's isn't.
+    const copy = normalizePath(creatableName(conflictPath(path)));
     await this.app.vault.createBinary(copy, plaintext);
     await adoptRemoteAsBase();
     report.conflicts++;

@@ -131,6 +131,8 @@ export class FakeVault {
 
   async createBinary(path: string, data: ArrayBuffer): Promise<TFile> {
     if (this.files.has(path)) throw new Error(`createBinary: ${path} already exists`);
+    // Like the real thing: creating is where the name is validated.
+    if (/[\\:*?"<>|]/.test(path)) throw new Error(`createBinary: file name cannot contain * " \\ / < > : | ?`);
     this.files.set(path, { bytes: new Uint8Array(data.slice(0)), mtime: tick() });
     return this.getAbstractFileByPath(path) as TFile;
   }
