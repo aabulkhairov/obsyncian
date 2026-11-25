@@ -1,7 +1,7 @@
 {
   "id": "obsyncian",
   "name": "Syncian",
-  "version": "1.0.38",
+  "version": "1.0.39",
   "minAppVersion": "1.8.7",
   "description": "Sync and back up your vault across devices with end-to-end encryption. Requires a paid Obsyncian plan.",
   "author": "Almas Abulkhairov",
