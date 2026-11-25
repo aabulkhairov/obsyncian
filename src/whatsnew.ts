@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.39",
+    notes: [
+      "### 🛡️ Safer \"missing files\" check",
+      "A note that's still on this device but that Obsidian hasn't picked up yet is no longer counted as deleted, so it can't be removed from your other devices by mistake.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.38",
     notes: [
       "### 🧭 A clear message when a vault's cloud copy is gone",

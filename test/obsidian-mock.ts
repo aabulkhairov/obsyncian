@@ -102,6 +102,9 @@ export class FakeApp {
 export class FakeVault {
   files = new Map<string, Stored>();
   folders = new Set<string>();
+  // On disk but not in Obsidian's index (getFiles doesn't list them).
+  unindexed = new Set<string>();
+  adapter = { exists: async (path: string) => this.files.has(path) || this.unindexed.has(path) || this.folders.has(path) };
   private handles = new Map<string, TFile>();
 
   getAbstractFileByPath(path: string): TFile | TFolder | null {

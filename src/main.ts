@@ -382,6 +382,7 @@ export default class ObsyncPlugin extends Plugin {
           15_000
         );
       }
+      if (held && held !== this.heldDeletionsNotified && report?.heldDiagnostic) this.reportError("sync", report.heldDiagnostic);
       if (report) this.heldDeletionsNotified = held;
       if (report?.quotaBlocked) {
         if (!this.settings.quotaBlocked) {

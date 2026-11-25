@@ -136,6 +136,9 @@ export interface SyncReport {
   // server because there are suspiciously many of them — see the guard in
   // push(). 0 when nothing is held.
   heldDeletions: number;
+  // Why heldDeletions is what it is, as counts (no names): sent once to the
+  // error channel so a support case doesn't have to start from a screenshot.
+  heldDiagnostic?: string;
   // Transfers cut short because the connection went away (the device slept,
   // the network dropped). Not errors: each is picked up again on the next
   // sync, which the plugin starts as soon as the device is back online.
@@ -226,6 +229,23 @@ const RESCAN_MIN_INTERVAL_MS = 10 * 60_000;
 // server until the user confirms. "Missing" is all the engine can see — it
 // can't tell a deliberate cleanup from a vault folder that failed to load.
 const MASS_DELETE_MIN = 10;
+
+// How the missing files spread over the vault's top-level folders, as
+// counts against folder numbers rather than names (names are private):
+// "1 folder holds 812, 2 folders hold 21, root 0" tells a lost folder from a
+// scattered cleanup without saying which folder.
+export function topFolders(paths: string[]): string {
+  const counts = new Map<string, number>();
+  let root = 0;
+  for (const p of paths) {
+    const i = p.indexOf("/");
+    if (i < 0) root++;
+    else counts.set(p.slice(0, i), (counts.get(p.slice(0, i)) ?? 0) + 1);
+  }
+  const sizes = [...counts.values()].sort((a, b) => b - a);
+  const shown = sizes.slice(0, 5).join("+") || "none";
+  return `${counts.size} folder(s) [${shown}${sizes.length > 5 ? "+…" : ""}], root ${root}`;
+}
 
 interface PushJob {
   path: string;
@@ -1271,9 +1291,28 @@ export class SyncEngine {
     // Walks the index, not byPath: when two ids share a deleted path, both go.
     const vaultEntries = Object.entries(this.state.files)
       .filter(([, entry]) => !this.configStore.owns(entry.path) && !isExcluded(entry.path, excludes));
-    const missing = vaultEntries.filter(([, entry]) => !seen.has(entry.path));
+    //
+    // getFiles() is only what Obsidian has indexed. A file can be absent from
+    // it and still be right there: its name in the other Unicode form (macOS
+    // and Cyrillic "й", for one), or on disk but not (yet) picked up by
+    // Obsidian. Neither was deleted, so neither may be deleted remotely.
+    const seenNfc = new Set([...seen].map((p) => p.normalize("NFC")));
+    const gone: [string, IndexEntry][] = [];
+    let otherForm = 0;
+    let onDisk = 0;
+    for (const item of vaultEntries) {
+      const path = item[1].path;
+      if (seen.has(path)) continue;
+      if (seenNfc.has(path.normalize("NFC"))) { otherForm++; continue; }
+      if (await this.app.vault.adapter.exists(path).catch(() => false)) { onDisk++; continue; }
+      gone.push(item);
+    }
+    const missing = gone;
     if (!this.confirmedMassDelete && missing.length >= MASS_DELETE_MIN && missing.length * 3 > vaultEntries.length) {
       report.heldDeletions = missing.length;
+      report.heldDiagnostic = `held ${missing.length} deletions: ${vaultEntries.length} indexed, ${localFiles.length} files visible to Obsidian, ` +
+        `${otherForm} matched in another Unicode form, ${onDisk} on disk but not indexed, ${missing.length} not on disk; ` +
+        `missing by top folder: ${topFolders(missing.map(([, e]) => e.path))}`;
       return;
     }
     await this.commitDeletes(missing, report);

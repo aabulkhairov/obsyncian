@@ -5,7 +5,7 @@ import { makeClient } from "./helpers";
 import { conflictPath } from "../src/util";
 import { PlainCodec } from "../src/codec";
 import { CryptoCodec, makeKeyCheck } from "../src/crypto";
-import { adoptVaultState, emptySyncState, type IndexEntry, type SyncState } from "../src/sync";
+import { adoptVaultState, emptySyncState, topFolders, type IndexEntry, type SyncState } from "../src/sync";
 
 const FAKE_ENTRY: IndexEntry = {
   path: "Note.md", version: 1, localHash: "aa", remoteHash: "bb", mtime: 1, size: 1,
@@ -1056,6 +1056,46 @@ describe("mass-deletion guard", () => {
     expect((await a.engine.sync())?.heldDeletions).toBe(0);
   });
 
+  it("never deletes files that are on disk but missing from Obsidian's index", async () => {
+    const { server, a } = await synced(30);
+    for (let i = 0; i < 20; i++) {
+      a.vault.delete(`n${i}.md`);
+      a.vault.unindexed.add(`n${i}.md`);
+    }
+    for (let i = 20; i < 23; i++) a.vault.delete(`n${i}.md`);
+
+    const report = await a.engine.sync();
+    expect(report?.heldDeletions).toBe(0);
+    expect(report?.deletedRemote).toBe(3);
+    expect([...server.entries.values()].filter((e) => e.deleted).length).toBe(3);
+  });
+
+  it("treats a name in the other Unicode form as the same file, not a deletion", async () => {
+    const s = setup();
+    const nfc = "Заметки/Дней.md".normalize("NFC");
+    for (let i = 0; i < 12; i++) s.a.vault.write(`Заметки/${i} дней й.md`.normalize("NFC"), `note ${i}`);
+    s.a.vault.write(nfc, "x");
+    await s.a.engine.sync();
+    // The same names, now listed decomposed (as some macOS paths are).
+    for (const path of [...s.a.vault.files.keys()]) {
+      const bytes = s.a.vault.read(path)!;
+      s.a.vault.delete(path);
+      s.a.vault.write(path.normalize("NFD"), bytes);
+    }
+    const report = await s.a.engine.sync();
+    expect(report?.heldDeletions).toBe(0);
+    expect([...s.server.entries.values()].filter((e) => e.deleted).length).toBe(0);
+  });
+
+  it("explains a hold in counts, without file names", async () => {
+    const { a } = await synced(30);
+    for (let i = 0; i < 20; i++) a.vault.delete(`n${i}.md`);
+    const report = await a.engine.sync();
+    expect(report?.heldDiagnostic).toBe(
+      "held 20 deletions: 30 indexed, 10 files visible to Obsidian, 0 matched in another Unicode form, 0 on disk but not indexed, 20 not on disk; missing by top folder: 0 folder(s) [none], root 20"
+    );
+  });
+
   it("a confirmation only covers the next cycle", async () => {
     const { a } = await synced(30);
     a.engine.resolveHeldDeletions("delete");
@@ -1994,5 +2034,12 @@ describe("stuck version conflicts", () => {
     const second = await b.engine.sync();
     expect(second?.pushed).toBe(1);
     expect(calls.full).toBe(0);
+  });
+});
+
+describe("topFolders", () => {
+  it("counts per top-level folder, largest first, without naming them", () => {
+    const paths = [...Array(5).fill("A/x.md"), "B/y.md", "B/z/w.md", "root.md"];
+    expect(topFolders(paths)).toBe("2 folder(s) [5+2], root 1");
   });
 });
