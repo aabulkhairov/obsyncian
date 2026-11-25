@@ -318,6 +318,38 @@ describe("publishing", () => {
     return src;
   }
 
+  it("takes PUBLISH.md at the top of the vault as the landing, not as a page", async () => {
+    const COVER = [0x89, 0x50, 0x4e, 0x47, 7, 7, 7];
+    const src = new MemorySource()
+      .note("PUBLISH.md", "---\ntags: [x]\n---\n![[cover.png]]\n\nWhat is inside.\n\n![[Deal one]]\n\nSee [[Deal one|the first deal]] and ![[Private/Diary]].")
+      .note("Deals/Deal one.md", "# Deal one\nNumbers.")
+      .note("Private/Diary.md", "not published")
+      .bin("cover.png", COVER);
+    const m = await buildManifest(src, sel(["Deals"])); // PUBLISH.md comes along unselected
+    const cover = await digestOf(COVER);
+
+    expect(m.pages.map((p) => p.path)).toEqual(["Deals/Deal one.md"]);
+    expect(m.notes).not.toContain("PUBLISH.md");
+    expect(m.attachments).toContain("PUBLISH.md"); // listed for consent
+    expect(m.objects.map((o) => o.digest)).toContain(cover);
+    expect(m.landing).toContain(`![](/-/o/${cover})`);
+    expect(m.landing).toContain("![Deal one](/-/p/deal-one)"); // an embed, marked for a preview
+    expect(m.landing).toContain("[the first deal](/-/p/deal-one)"); // a plain link stays a link
+    expect(m.landing).toContain("[Diary](/-/p/)"); // not published: no preview, unresolved
+    expect(m.landing).not.toContain("tags:");
+
+    const fake = new FakePublishApi();
+    await publishManifest(api(fake), fake.site.id, m, src);
+    expect(fake.calls.commit.at(-1)).toMatchObject({ final: true, landing_markdown: m.landing });
+  });
+
+  it("sends an empty landing when there is no PUBLISH.md, so a deleted one comes off the site", async () => {
+    const src = new MemorySource().note("Notes/A.md", "a");
+    const fake = new FakePublishApi();
+    await publishManifest(api(fake), fake.site.id, await buildManifest(src, sel(["Notes"])), src);
+    expect(fake.calls.commit.at(-1)).toMatchObject({ final: true, landing_markdown: "" });
+  });
+
   it("plans in batches, uploads only what's missing, and commits in chunks", async () => {
     const src = bigVault(450, 2_100);
     const fake = new FakePublishApi();

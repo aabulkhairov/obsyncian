@@ -301,6 +301,10 @@ export interface LinkContext {
   // The marker for an embedded Excalidraw board (see publishdiagrams.ts), or
   // undefined when boards aren't being published.
   boardOf?(path: string): string | undefined;
+  // How an embedded note (![[Note]]) is written. Pages leave this unset and
+  // the embed degrades to a link; PUBLISH.md marks it so the server can show
+  // a preview of that note on the sign-in page.
+  embedNote?(target: string, label: string): string;
 }
 
 function escapeLabel(text: string): string {
@@ -362,6 +366,7 @@ function rewriteTarget(ctx: LinkContext, embed: boolean, rawTarget: string, labe
   // A note. Embedding one (transclusion) degrades to a link for now.
   // TODO(P7): inline embedded notes, and pre-render Excalidraw drawings.
   const slug = target ? ctx.slugOf(target) : undefined;
+  if (embed && slug && ctx.embedNote) return ctx.embedNote(slug + fragmentFor(subpath), shown);
   // Not in this publication: an empty page target, which the renderer shows
   // as a visibly unresolved link — never a guess that could land on another
   // page with a similar name.
@@ -484,8 +489,18 @@ export interface PublishManifest {
   // Referenced but unreadable or empty — shown on the page as missing.
   skipped: string[];
   homePath?: string;
+  // PUBLISH.md at the top of the vault, rewritten like a page: the landing a
+  // private site's sign-in page shows (see LANDING_PATH).
+  landing?: string;
   bytes: number;
 }
+
+// A note named PUBLISH.md at the top of the vault is not a page: it is the
+// author's pitch on a private site's sign-in page. It goes along with every
+// publish of the vault, selected or not, and is listed for consent like any
+// file that leaves the vault.
+const LANDING_PATH = /^publish\.md$/i;
+export const isLandingPath = (path: string): boolean => LANDING_PATH.test(path);
 
 // Notes whose name says "start here" become the site's home page when they
 // sit at the top of the selection; otherwise the server takes the first page.
@@ -497,8 +512,9 @@ export interface BuildProgress {
 
 // Step 1 of the pipeline: everything the server needs, computed locally.
 export async function buildManifest(source: PublishSource, sel: PublishSelection, onProgress: BuildProgress = () => {}): Promise<PublishManifest> {
+  const landingFile = source.files().find((f) => isLandingPath(f.path));
   const notes = source.files()
-    .filter((f) => isPublishablePage(f.path) && isSelected(sel, f.path))
+    .filter((f) => isPublishablePage(f.path) && isSelected(sel, f.path) && !isLandingPath(f.path))
     .sort((a, b) => sortKey(a.path).localeCompare(sortKey(b.path), undefined, { numeric: true, sensitivity: "base" }) || comparePaths(a.path, b.path));
   const slugs = assignSlugs(notes.map((n) => n.path));
 
@@ -517,6 +533,10 @@ export async function buildManifest(source: PublishSource, sel: PublishSelection
     bodies.set(note.path, body);
     for (const ref of referencedFiles(body, note.path, (l, f) => source.resolve(l, f))) referenced.add(ref);
     for (const board of referencedBoards(body, note.path, (l, f) => source.resolve(l, f))) boardPaths.add(board);
+  }
+  const landingBody = landingFile ? stripFrontmatter(await source.read(landingFile.path)) : null;
+  if (landingFile && landingBody !== null) {
+    for (const ref of referencedFiles(landingBody, landingFile.path, (l, f) => source.resolve(l, f))) referenced.add(ref);
   }
 
   // Pass 2: hash the attachments. Bytes aren't kept — the few that turn out
@@ -666,11 +686,25 @@ export async function buildManifest(source: PublishSource, sel: PublishSelection
     return page;
   });
 
+  // The landing: links and images resolved like a page's, and an embedded
+  // note written as ![title](/-/p/slug), which the server turns into a preview.
+  let landing: string | undefined;
+  if (landingFile && landingBody !== null && landingBody.trim()) {
+    landing = rewriteMarkdown(landingBody, {
+      path: landingFile.path,
+      resolve: (l, f) => source.resolve(l, f),
+      slugOf: (p) => slugs.get(p),
+      digestOf: (p) => digests.get(p),
+      embedNote: (target, label) => `![${escapeLabel(label)}](${PAGE_PREFIX}${target})`,
+    });
+    attachments.push(landingFile.path);
+  }
+
   const homePath = notes.find((n) => !n.path.includes("/") && HOME_NAMES.test(stem(n.path)))?.path;
-  const bytes = pages.reduce((sum, p) => sum + utf8Length(p.content_markdown), 0) +
+  const bytes = pages.reduce((sum, p) => sum + utf8Length(p.content_markdown), 0) + utf8Length(landing ?? "") +
     [...objects.values()].reduce((sum, o) => sum + o.byte_size, 0);
 
-  return { pages, objects: [...objects.values()], sources, generated, notes: notes.map((n) => n.path), attachments, skipped, homePath, bytes };
+  return { pages, objects: [...objects.values()], sources, generated, notes: notes.map((n) => n.path), attachments, skipped, homePath, landing, bytes };
 }
 
 // Top-level folder → the sidebar section a page is listed under. Notes at the
@@ -706,7 +740,7 @@ export function estimateSelection(
   const attached = new Map<string, number>();
   const byPath = new Map(files.map((f) => [f.path, f]));
   for (const f of files) {
-    if (!isPublishablePage(f.path) || !isSelected(sel, f.path)) continue;
+    if (!isPublishablePage(f.path) || !isSelected(sel, f.path) || isLandingPath(f.path)) continue;
     notes++;
     bytes += f.size;
     for (const target of linksOf(f.path)) {
@@ -743,7 +777,7 @@ export function changesSincePublish(
   if (Number.isNaN(since)) return changes;
   const agreed = new Set(consented);
   for (const f of files) {
-    if (!isPublishablePage(f.path) || !isSelected(sel, f.path)) continue;
+    if (!isPublishablePage(f.path) || !isSelected(sel, f.path) || isLandingPath(f.path)) continue;
     if (!agreed.has(f.path)) changes.set(f.path, "new");
     else if (f.mtime > since) changes.set(f.path, "edited");
   }
@@ -884,7 +918,13 @@ export async function publishManifest(
       phase: final ? "finishing" : "saving", done: i, total: chunks.length,
       text: final ? "Going live…" : `Sending pages ${i + 1}/${chunks.length}…`,
     });
-    const body = { snapshot, pages, final, ...(final && manifest.homePath ? { home_path: manifest.homePath } : {}) };
+    // The final call always carries the landing, an empty one included, so
+    // deleting PUBLISH.md takes it off the sign-in page.
+    const body = {
+      snapshot, pages, final,
+      ...(final && manifest.homePath ? { home_path: manifest.homePath } : {}),
+      ...(final ? { landing_markdown: manifest.landing ?? "" } : {}),
+    };
     try {
       result = await api.publishCommit(siteId, body);
     } catch (e) {

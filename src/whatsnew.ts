@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.40",
+    notes: [
+      "### 📣 Tell readers what's inside a private site",
+      "Put a note named **PUBLISH.md** at the top of your vault, and Publish shows it on your private site's sign-in page: the first image as a cover, lists as feature cards and steps, a quote, questions — and `![[a note]]` as a preview of that note. It's plain markdown; no special syntax to learn.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.39",
     notes: [
       "### 🛡️ Safer \"missing files\" check",

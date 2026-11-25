@@ -156,6 +156,8 @@ export interface PublishCommitBody {
   pages: PublishPageInput[];
   final: boolean;
   home_path?: string;
+  // PUBLISH.md, rewritten (see PublishManifest.landing); "" clears it.
+  landing_markdown?: string;
   cover_digest?: string;
 }
 
