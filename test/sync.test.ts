@@ -2043,3 +2043,32 @@ describe("topFolders", () => {
     expect(topFolders(paths)).toBe("2 folder(s) [5+2], root 1");
   });
 });
+
+describe("an upload whose reply was lost", () => {
+  it("is recognised as this device's own on the next pull — no merge, no markers", async () => {
+    const { server, a, b } = setup();
+    a.vault.write("n.md", "Давай познакомимся");
+    await a.engine.sync();
+
+    a.vault.write("n.md", "Давай познакомимся! Расскажи о себе");
+    const real = server.commitBatch.bind(server);
+    server.commitBatch = async (vaultId, commits) => {
+      await real(vaultId, commits);
+      server.commitBatch = real;
+      throw new ApiError(0, "timeout", "No response after 30s");
+    };
+    expect((await a.engine.sync())?.interrupted).toBe(1);
+
+    // Typed on while the connection was down; these words differ from what
+    // was sent, so a merge would have had to mark them.
+    a.vault.write("n.md", "Давай познакомимся! Напиши о себе");
+    const report = await a.engine.sync();
+    expect(report?.merged).toBe(0);
+    expect(report?.errors).toEqual([]);
+    expect(a.vault.read("n.md")).toBe("Давай познакомимся! Напиши о себе");
+
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(b.vault.read("n.md")).toBe("Давай познакомимся! Напиши о себе");
+  });
+});

@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.41",
+    notes: [
+      "### ✍️ No more conflict markers in a note you're typing",
+      "On a shaky connection, Syncian could mistake its own earlier save of a note for an edit from another device and wrap your text in `<<<<<<<` conflict markers — sometimes several times over. It now recognises its own saves, and a sentence that was simply typed further is never treated as a conflict. If a note already has such markers, delete them by hand once.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.40",
     notes: [
       "### 📣 Tell readers what's inside a private site",

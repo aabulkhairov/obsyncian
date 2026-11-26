@@ -360,6 +360,12 @@ export class SyncEngine {
   // Revisions this device committed itself. The change signal announces
   // every commit to every device, the committer included.
   private ownRevisions = new Set<number>();
+  // Uploads whose commit got no answer (the connection dropped mid-request).
+  // The server may well have applied one; if so it comes back on the next
+  // pull looking like another device's edit, and merging "theirs" into what
+  // was typed since put conflict markers around a device's own text. Kept by
+  // file id until that pull, and recognised there by the uploaded hash.
+  private unconfirmed = new Map<string, { hash: string; job: PushJob }>();
   // file_id -> the base version the last push sent and the server rejected
   // as stale (version_conflict). Normally the next pull brings the newer
   // version and the conflict resolves itself; one still at the same version
@@ -810,6 +816,24 @@ export class SyncEngine {
 
     // Remote paths come from another device — normalize before touching disk.
     let path = normalizePath(await this.codec.decodePath(change.encrypted_path));
+
+    // Our own upload, committed by the server although we never heard back:
+    // record it as synced. Whatever was typed since is an ordinary local
+    // edit for the push that follows.
+    const sent = this.unconfirmed.get(change.file_id);
+    if (sent) {
+      this.unconfirmed.delete(change.file_id);
+      const { hash, job } = sent;
+      if (hash === change.ciphertext_hash && job.path === path && (entry?.path ?? path) === path) {
+        this.updateEntry(change.file_id, {
+          path, version: change.version,
+          localHash: job.localHash, remoteHash: change.ciphertext_hash,
+          mtime: job.mtime, size: job.size,
+        });
+        await this.saveBase(change.file_id, path, job.bytes);
+        return;
+      }
+    }
 
     // We renamed this file locally and haven't pushed that yet. If the remote
     // still has it where we left it, our rename stands and this change
@@ -1441,6 +1465,9 @@ export class SyncEngine {
         // A server from before in-place renames insists on a blob: upload the
         // file under its new path instead — still one file with one history,
         // just not free.
+        if (!job.rename && !job.config && payload.ciphertext_hash && isConnectionLoss(result.err)) {
+          this.unconfirmed.set(job.fileId, { hash: payload.ciphertext_hash, job });
+        }
         if (job.rename && result.err instanceof ApiError && result.err.code === "missing_parameter") {
           redo.push({ ...job, rename: false });
         } else {

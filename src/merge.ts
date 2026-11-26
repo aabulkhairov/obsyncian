@@ -41,7 +41,7 @@ export function merge3(base: string, local: string, remote: string): string | nu
 export const MERGE_LABEL_LOCAL = "This device";
 export const MERGE_LABEL_REMOTE = "Other device (synced)";
 
-// Three-way// Three-way merge that ALWAYS returns text — nothing is ever lost. Works
+// Three-way merge that ALWAYS returns text — nothing is ever lost. Works
 // line by line first, then looks closer at each hunk both sides touched:
 //  - identical concurrent edits collapse (excludeFalseConflicts);
 //  - both sides ADDED lines at the same spot (the base had nothing there —
@@ -49,6 +49,8 @@ export const MERGE_LABEL_REMOTE = "Other device (synced)";
 //    first. Notes are prose, not code; two additions don't contradict.
 //  - both sides changed the same lines: retried word by word, so edits to
 //    different sentences of one paragraph (one line in Obsidian) still merge;
+//  - one side is the other plus more text (the same sentence, typed further
+//    — an earlier save of this very note arriving late): the longer wins;
 //  - only edits to the very same words are left inline with git-style
 //    <<<<<<< / ======= / >>>>>>> markers.
 // `conflict` reports whether any markers were inserted, so the caller can
@@ -69,6 +71,11 @@ export function merge3Markers(
       continue;
     }
     const { a, o, b } = region.conflict!;
+    const longer = continuation(a.join("\n"), b.join("\n"));
+    if (longer !== null) {
+      lines.push(...longer.split("\n"));
+      continue;
+    }
     if (o.length === 0) {
       lines.push(...unionLines(a, b));
       continue;
@@ -82,6 +89,17 @@ export function merge3Markers(
     lines.push(`<<<<<<< ${MERGE_LABEL_LOCAL}`, ...a, "=======", ...b, `>>>>>>> ${MERGE_LABEL_REMOTE}`);
   }
   return { text: lines.join("\n"), conflict };
+}
+
+// When one text simply continues the other, the longer one; else null. This
+// is what two saves of a sentence being typed look like, and choosing the
+// longer loses nothing. (A side that removed the text entirely is not a
+// shorter version of it.)
+function continuation(a: string, b: string): string | null {
+  if (a === "" || b === "") return null; // one side deleted it: a real disagreement
+  if (b.startsWith(a)) return b;
+  if (a.startsWith(b)) return a;
+  return null;
 }
 
 // Both blocks, minus whatever they share at the start and end (two devices
@@ -109,8 +127,13 @@ function mergeWords(base: string, local: string, remote: string): string | null 
   if (Math.max(o.length, a.length, b.length) > MAX_HUNK_TOKENS) return null;
   const out: string[] = [];
   for (const region of diff3Merge(a, o, b, { excludeFalseConflicts: true })) {
-    if (!region.ok) return null;
-    out.push(...region.ok);
+    if (region.ok) {
+      out.push(...region.ok);
+      continue;
+    }
+    const longer = continuation(region.conflict!.a.join(""), region.conflict!.b.join(""));
+    if (longer === null) return null;
+    out.push(longer);
   }
   return out.join("");
 }

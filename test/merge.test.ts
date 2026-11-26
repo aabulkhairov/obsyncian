@@ -191,3 +191,28 @@ describe("mergeJson", () => {
     expect(mergeJson(null, "{", "{}")).toBeNull();
   });
 });
+
+describe("merge3Markers — a sentence typed further", () => {
+  const base = "# Request\nДавай познакомимся";
+  const earlier = "# Request\nДавай познакомимся! Расскажи о себе";
+  const later = "# Request\nДавай познакомимся! Расскажи о себе и напиши мне";
+
+  it("takes the longer text when one side continues the other", () => {
+    expect(merge3Markers(base, later, earlier)).toEqual({ text: later, conflict: false });
+    expect(merge3Markers(base, earlier, later)).toEqual({ text: later, conflict: false });
+  });
+
+  it("also when the shorter side stops mid-word", () => {
+    const r = merge3Markers("a\nтекст\nz", "a\nтекст интересуешь\nz", "a\nтекст интересуешься. Мне\nz");
+    expect(r).toEqual({ text: "a\nтекст интересуешься. Мне\nz", conflict: false });
+  });
+
+  it("and for new lines added at the same spot", () => {
+    const r = merge3Markers("a\nz", "a\nпервая\nвторая стро\nz", "a\nпервая\nвторая строка и ещё\nz");
+    expect(r).toEqual({ text: "a\nпервая\nвторая строка и ещё\nz", conflict: false });
+  });
+
+  it("still marks edits that really differ", () => {
+    expect(merge3Markers("a\nкот\nz", "a\nпёс\nz", "a\nлев\nz").conflict).toBe(true);
+  });
+});
