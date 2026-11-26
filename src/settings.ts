@@ -135,6 +135,33 @@ export const TELEGRAM_CODE_RE = /^[0-9A-Z]{1,6}-\d{6}$/i;
 // its own row.
 export const INSTALL_ID_RE = /^[0-9A-Z]{4}$/;
 
+// This install's id: one per device and vault, from Obsidian's local storage,
+// which no file sync can copy. Made on first use.
+export function installIdOf(app: App): string {
+  const key = "syncian-install-id";
+  const stored: unknown = app.loadLocalStorage(key);
+  if (typeof stored === "string" && INSTALL_ID_RE.test(stored)) return stored;
+  const id = newInstallId();
+  app.saveLocalStorage(key, id);
+  return id;
+}
+
+// data.json records which install wrote it last. A different id there means
+// something other than Syncian copied this file from another computer:
+// iCloud Drive, Dropbox, Syncthing, Git. With it came that computer's login
+// and its record of what is synced, and two computers then keep "correcting"
+// each other's files: duplicated text, conflict markers, endless re-uploads.
+export function stateWrittenElsewhere(owner: unknown, installId: string): boolean {
+  return typeof owner === "string" && INSTALL_ID_RE.test(owner) && owner !== installId;
+}
+
+export const SECOND_SYNC_TITLE = "Another sync tool is also syncing this vault";
+export const SECOND_SYNC_TEXT =
+  "Syncian's own settings file was changed from another computer, which happens when the vault folder is also synced by " +
+  "iCloud Drive (including Desktop & Documents), Dropbox, Syncthing or Git. Two sync tools on one folder fight over every edit: " +
+  "expect duplicated text and conflict markers. Keep the vault in a folder only Syncian syncs. " +
+  "If you just copied this vault here from another computer once, you can ignore this.";
+
 export function newInstallId(): string {
   const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const bytes = crypto.getRandomValues(new Uint8Array(4));
@@ -532,12 +559,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   // never synced — unlike data.json, which plugin & settings sync can copy
   // to another device along with the id.
   private installId(): string {
-    const key = "syncian-install-id";
-    const stored: unknown = this.app.loadLocalStorage(key);
-    if (typeof stored === "string" && INSTALL_ID_RE.test(stored)) return stored;
-    const id = newInstallId();
-    this.app.saveLocalStorage(key, id);
-    return id;
+    return installIdOf(this.app);
   }
 
   private async completeLogin(token: string, identity: string, email: string): Promise<void> {

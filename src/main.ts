@@ -4,7 +4,7 @@ import { AdapterBaseStore } from "./basestore";
 import { AdapterConfigStore } from "./configstore";
 import { Codec, PlainCodec } from "./codec";
 import { CryptoCodec, unlock } from "./crypto";
-import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, clampSyncInterval, parseExcludes } from "./settings";
+import { DEFAULT_SETTINGS, ObsyncSettings, ObsyncSettingTab, SECOND_SYNC_TEXT, SECOND_SYNC_TITLE, clampSyncInterval, installIdOf, parseExcludes, stateWrittenElsewhere } from "./settings";
 import { ChangeSignal, LocalChanges } from "./signal";
 import { hostOf, noteConnectivity } from "./connectivity";
 import { SyncEngine, SyncReport, SyncState, adoptVaultState, emptySyncState } from "./sync";
@@ -19,6 +19,8 @@ interface PersistedData {
   // Manifest version the release-notes popup was last shown for. Undefined
   // until the first run that carries this feature — see maybeShowWhatsNew.
   lastNotesVersion?: string;
+  // Install id of whoever wrote this file last — see stateWrittenElsewhere.
+  stateOwner?: string;
 }
 
 // Backoff for pendingSync's chained re-run when the previous cycle(s) errored
@@ -54,6 +56,9 @@ export default class ObsyncPlugin extends Plugin {
   private signal!: ChangeSignal;
   // Highest revision the server has announced that we haven't acted on.
   private signalledRevision = 0;
+  // data.json was last written by another computer's install: a second sync
+  // tool is copying it around. Shown in the sidebar until Obsidian restarts.
+  secondSyncDetected = false;
   // What savePersisted last wrote, to skip rewriting an unchanged data.json.
   private lastSaved = "";
   private lastSavedSyncAt = 0;
@@ -142,6 +147,7 @@ export default class ObsyncPlugin extends Plugin {
     this.setStatus(this.settings.paused ? "paused" : "idle");
 
     this.addSettingTab(new ObsyncSettingTab(this.app, this));
+    if (this.secondSyncDetected) this.app.workspace.onLayoutReady(() => this.warnSecondSync());
 
     this.registerView(VIEW_TYPE_OBSYNC, (leaf) => new ObsyncStatusView(leaf, this));
     this.addRibbonIcon("refresh-cw", "Syncian sync status", () => this.activateView());
@@ -653,6 +659,7 @@ export default class ObsyncPlugin extends Plugin {
     // A copy, not DEFAULT_SETTINGS' own object, which every load would share.
     this.settings.publishSites = { ...(this.settings.publishSites ?? {}) };
     this.lastNotesVersion = data?.lastNotesVersion;
+    if (stateWrittenElsewhere(data?.stateOwner, installIdOf(this.app))) this.secondSyncDetected = true;
     // Older builds stored the interval in minutes; carry the value over once.
     const stored = data?.settings as { syncIntervalMinutes?: number; syncIntervalSeconds?: number } | undefined;
     if (stored?.syncIntervalMinutes && !stored.syncIntervalSeconds) {
@@ -667,12 +674,34 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
+  // Obsidian calls this when data.json changes on disk and it wasn't us. The
+  // file is not reloaded — what's in memory is this device's truth — only
+  // checked for another install's mark.
+  async onExternalSettingsChange() {
+    const data = (await this.loadData().catch(() => null)) as Partial<PersistedData> | null;
+    if (!stateWrittenElsewhere(data?.stateOwner, installIdOf(this.app))) return;
+    const first = !this.secondSyncDetected;
+    this.secondSyncDetected = true;
+    if (first) this.warnSecondSync();
+  }
+
+  // Once per session: a notice, the sidebar box (see view.ts), and one line
+  // to the error channel so support sees it without asking.
+  private warnSecondSync() {
+    new Notice(`Syncian: ${SECOND_SYNC_TITLE.toLowerCase()}. ${SECOND_SYNC_TEXT}`, 30_000);
+    this.reportError("sync", "data.json was last written by another install: a second sync tool is copying the plugin's state between devices");
+    this.refreshViews();
+  }
+
   // The sync engine calls this several times a cycle, and most cycles change
   // nothing — so don't rewrite data.json (the whole index, megabytes on a big
   // vault) unless something in it actually differs. lastSyncAt moves every
   // cycle by design; on its own it's only worth a write once in a while.
   async savePersisted() {
-    const data = { settings: this.settings, syncState: this.syncState, lastNotesVersion: this.lastNotesVersion } satisfies PersistedData;
+    const data = {
+      settings: this.settings, syncState: this.syncState, lastNotesVersion: this.lastNotesVersion,
+      stateOwner: installIdOf(this.app),
+    } satisfies PersistedData;
     const { lastSyncAt, ...index } = this.syncState;
     let snapshot: string;
     try {

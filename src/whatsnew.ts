@@ -10,6 +10,13 @@ export interface ReleaseNote {
 // benefit-oriented; this is what pops up after an update.
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.0.42",
+    notes: [
+      "### ⚠️ A heads-up when two sync tools share a vault",
+      "If your vault folder is also synced by iCloud Drive (including Desktop & Documents), Dropbox, Syncthing or Git, the two tools fight over every edit — that's where duplicated text and `<<<<<<<` conflict markers come from. Syncian now notices this and tells you, in a notice and in its sidebar. The fix is to keep the vault in a folder only Syncian syncs.",
+    ].join("\n"),
+  },
+  {
     version: "1.0.41",
     notes: [
       "### ✍️ No more conflict markers in a note you're typing",

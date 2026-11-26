@@ -1,6 +1,7 @@
 import { ItemView, WorkspaceLeaf } from "obsidian";
 import type ObsyncPlugin from "./main";
 import { formatBytes } from "./util";
+import { SECOND_SYNC_TEXT, SECOND_SYNC_TITLE } from "./settings";
 
 export const VIEW_TYPE_OBSYNC = "obsync-status-view";
 
@@ -127,6 +128,12 @@ export class ObsyncStatusView extends ItemView {
   // errors themselves — not just "errors (3)" with the details buried in
   // the developer console.
   private renderLastReport(el: HTMLElement): void {
+    if (this.plugin.secondSyncDetected) {
+      const box = el.createDiv({ cls: "obsync-errors" });
+      box.createDiv({ cls: "obsync-errors-title", text: SECOND_SYNC_TITLE });
+      box.createDiv({ cls: "obsync-error-line", text: SECOND_SYNC_TEXT });
+    }
+
     const report = this.plugin.lastReport;
     const at = this.plugin.lastReportAt;
     if (!report || !at) return;
